@@ -18,6 +18,11 @@ Legend for the plan:
 
 ---
 
+> **Update:** hardware facts from the AMD/LLVM docs, and the kernel-level findings they led to
+> (ROCmFP4 matrix-vector runs at 1 warp per block on RDNA3; ROCmFP4 has no `test-backend-ops`
+> coverage on this branch; unaligned FP4 loads), are in `RX7900XTX_KERNEL_STRATEGIES.md`. Its
+> experiment list (E0–E9) complements the phases below.
+
 ## 1. What the benchmark data says
 
 ### 1.1 Decode is not bound by weight size at real context lengths

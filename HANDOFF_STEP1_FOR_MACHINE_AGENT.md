@@ -4,6 +4,24 @@ From: the Claude Code cloud session (no GPU, no `hipcc`).
 To: the agent running on the physical machine (Windows 11 + WSL2, ROCm 7.x, gfx1100).
 Branch: `F/optimization`. Full reasoning is in `CLAUDE_OPUS55_SUGGESTIONS_AND_PLAN.md`.
 
+## 0. Update: hardware research findings (read `RX7900XTX_KERNEL_STRATEGIES.md`)
+
+Three findings from the AMD/LLVM documentation pass affect this step:
+
+1. **ROCmFP4 has no `test-backend-ops` coverage on this branch.** The port (`b783d79`) touched no
+   tests, so the "12967/12967 pass" in `docs/rocmfp4.md` was measured on the fork, not here.
+   Passing `test-backend-ops` does **not** validate the FP4 kernels until FP4 cases are added
+   (strategies doc, experiment E0).
+2. **ROCmFP4 matrix-vector decode runs with 1 warp per block on RDNA3.** Q4_0 and IQ4_NL get 8
+   (`calc_nwarps()`, `mmvq.cu:511`). This is a likely part of the merged build's ~8 ms/token
+   regression. Please also report what the fork's `feat/benchmark` has there:
+   `git show feat/benchmark:ggml/src/ggml-cuda/mmvq.cu | grep -n -A20 "RDNA3_0) {"`.
+   Do not change it before the user agrees; the A/B needs E0's perf cases.
+3. The attention re-read may be partly absorbed by L2 and the 96 MiB Infinity Cache, because the
+   6 query heads sharing a KV head run together. A low `fattn_bw.md` number then points at
+   redundant instructions and dequantization rather than DRAM traffic. Either way the fix is
+   the same.
+
 ## 1. Why this step exists
 
 Your own benchmark results (`RESULTS_tok_per_sec.md` in the wrapper repo) show that at
