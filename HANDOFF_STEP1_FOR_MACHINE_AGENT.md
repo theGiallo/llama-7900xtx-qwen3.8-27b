@@ -20,8 +20,9 @@ build/bin/test-backend-ops perf -b ROCm0 -o MUL_MAT \
 ```
 
 Commit both logs under `results/e0/<date>/` and report: the pass/fail count of (1), and for
-(2) the us/run and GB/s of each type at n=1 for both shapes. The Q4_0 and IQ4_NL rows (8 warps
-on RDNA3) against the ROCmFP4 rows (1 warp) are the E1 baseline. Don't change `mmvq.cu`; the
+(2) the us/run of each type at n=1 for both shapes (`test-backend-ops` prints GFLOPS for
+MUL_MAT, not GB/s; the cloud session converts us/run to bandwidth from the weight sizes). The
+Q4_0 and IQ4_NL rows (8 warps on RDNA3) against the ROCmFP4 rows (1 warp) are the E1 baseline. Don't change `mmvq.cu`; the
 cloud session prepares the E1/E2 variants once this baseline exists.
 
 ## 0. Update: hardware research findings (read `RX7900XTX_KERNEL_STRATEGIES.md`)
