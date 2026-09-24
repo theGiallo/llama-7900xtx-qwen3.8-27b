@@ -5,6 +5,8 @@
 #include "fattn-vec.cuh"
 #include "fattn.cuh"
 
+#include <unordered_set>
+
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 // one list per group of ncols1 queries: a column is selected if any query of the group can see it
 template <int ncols1, bool oob>
@@ -716,20 +718,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     return BEST_FATTN_KERNEL_TILE;
 }
 
-size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * dst) {
-    GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
-
-    const ggml_tensor * Q = dst->src[0];
-    const ggml_tensor * K = dst->src[1];
-    const ggml_tensor * V = dst->src[2];
-
-    GGML_ASSERT(K != nullptr);
-    GGML_ASSERT(V != nullptr);
-
-    const best_fattn_kernel kernel = ggml_cuda_get_best_fattn_kernel(device, dst);
-
-    bool need_f16_K = false;
-    bool need_f16_V = false;
+// Whether the chosen kernel has to convert K/V to f16 first (a full copy of the visible K/V per call).
+static void ggml_cuda_fattn_need_f16(
+        const best_fattn_kernel kernel, const ggml_tensor * Q, const ggml_tensor * K, const ggml_tensor * V,
+        bool & need_f16_K, bool & need_f16_V) {
+    need_f16_K = false;
+    need_f16_V = false;
 
     switch (kernel) {
         case BEST_FATTN_KERNEL_TILE:
@@ -745,6 +739,83 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
         case BEST_FATTN_KERNEL_NONE:
             break;
     }
+}
+
+// GGML_CUDA_FATTN_LOG=1: print the FlashAttention kernel choice once per distinct
+// (kernel, head size, Q batch, GQA ratio, K/V types, f16 conversion, n_kv power-of-2 bucket).
+// Diagnostic only; with CUDA/HIP graphs the op runs at capture time, so each shape is still seen.
+static void ggml_cuda_fattn_log_choice(const best_fattn_kernel kernel, const ggml_tensor * dst) {
+    static const bool enabled = [] {
+        const char * env = getenv("GGML_CUDA_FATTN_LOG");
+        return env != nullptr && atoi(env) != 0;
+    }();
+    if (!enabled) {
+        return;
+    }
+
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+
+    const char * kernel_name = "NONE";
+    switch (kernel) {
+        case BEST_FATTN_KERNEL_TILE:    kernel_name = "TILE";    break;
+        case BEST_FATTN_KERNEL_VEC:     kernel_name = "VEC";     break;
+        case BEST_FATTN_KERNEL_MMA_F16: kernel_name = "MMA_F16"; break;
+        case BEST_FATTN_KERNEL_NONE:    break;
+    }
+
+    bool need_f16_K = false;
+    bool need_f16_V = false;
+    ggml_cuda_fattn_need_f16(kernel, Q, K, V, need_f16_K, need_f16_V);
+    const bool conv_K = need_f16_K && K->type != GGML_TYPE_F16;
+    const bool conv_V = need_f16_V && V->type != GGML_TYPE_F16;
+
+    int kv_bucket = 0;
+    while ((int64_t(1) << (kv_bucket + 1)) <= K->ne[1]) {
+        kv_bucket++;
+    }
+
+    const int gqa_ratio = K->ne[2] > 0 ? int(Q->ne[2] / K->ne[2]) : 0;
+
+    char key[256];
+    snprintf(key, sizeof(key), "%s|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+        kernel_name, int(Q->ne[0]), int(V->ne[0]), int(Q->ne[1]), gqa_ratio, int(K->type), int(V->type),
+        int(conv_K), int(conv_V), kv_bucket);
+
+    static std::mutex mutex;
+    static std::unordered_set<std::string> seen;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!seen.insert(key).second) {
+        return;
+    }
+
+    const size_t k_bytes = ggml_nbytes(K);
+    const size_t v_bytes = ggml_nbytes(V);
+    const size_t conv_bytes = (conv_K ? ggml_nelements(K)*sizeof(half) : 0) + (conv_V ? ggml_nelements(V)*sizeof(half) : 0);
+
+    GGML_LOG_INFO("fattn: kernel=%s D=%d/%d n_q=%d n_head=%d n_head_kv=%d gqa=%d K=%s V=%s n_kv=%d "
+                  "K+V=%.1f MiB f16_conv_K=%d f16_conv_V=%d conv_f16=%.1f MiB\n",
+        kernel_name, int(Q->ne[0]), int(V->ne[0]), int(Q->ne[1]), int(Q->ne[2]), int(K->ne[2]), gqa_ratio,
+        ggml_type_name(K->type), ggml_type_name(V->type), int(K->ne[1]),
+        (k_bytes + v_bytes)/1048576.0, int(conv_K), int(conv_V), conv_bytes/1048576.0);
+}
+
+size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * dst) {
+    GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
+
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+
+    GGML_ASSERT(K != nullptr);
+    GGML_ASSERT(V != nullptr);
+
+    const best_fattn_kernel kernel = ggml_cuda_get_best_fattn_kernel(device, dst);
+
+    bool need_f16_K = false;
+    bool need_f16_V = false;
+    ggml_cuda_fattn_need_f16(kernel, Q, K, V, need_f16_K, need_f16_V);
 
     const ggml_cuda_flash_attn_ext_f16_extra_data f16_extra =
         ggml_cuda_flash_attn_ext_get_f16_extra_data(dst, need_f16_K, need_f16_V);
@@ -754,7 +825,9 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
-    switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
+    const best_fattn_kernel kernel = ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst);
+    ggml_cuda_fattn_log_choice(kernel, dst);
+    switch (kernel) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");
         case BEST_FATTN_KERNEL_TILE:

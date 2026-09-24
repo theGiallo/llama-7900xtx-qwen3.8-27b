@@ -121,17 +121,18 @@ Ordered by expected gain per unit of effort.
 - **A1 [MACHINE]** Log which flash-attention kernel runs for decode (batch 1) and for
   verify (batch 2–6), for q4_0 / q8_0 / f16 KV. Grep server logs for
   `converting K and V to f16`.
-- **A2 [NOW]** Add an opt-in env var (e.g. `GGML_CUDA_FATTN_LOG=1`) that prints the chosen
-  kernel, Q batch, GQA ratio, K/V types and whether f16 conversion ran, once per distinct
-  shape. This makes A1 a single run.
-- **A3 [NOW]** Write `scripts/rx7900xtx/bench-attn.sh`: runs
-  `test-backend-ops perf -o FLASH_ATTN_EXT` with this model's real shapes (head dim, KV
-  heads, GQA, KV length 16k / 64k / 113k / 258k, batch 1 and 2–8, q4_0 / q8_0 / f16) and
-  reports **GB/s and % of 960 GB/s**, not only time.
-- **A4 [NOW]** Same idea for `MUL_MAT` with the model's real matrix shapes and weight types
-  (FP4, Q4_K_S, IQ3_XXS, UD-Q3_K_XL), so the fixed ~27–35 ms part gets its own
-  bandwidth breakdown.
-- **A5 [MACHINE]** Run A3/A4 and read `head_count` / `head_count_kv` from the GGUF.
+- **A2 [DONE]** `GGML_CUDA_FATTN_LOG=1` prints the chosen kernel, Q batch, GQA ratio, K/V
+  types and whether f16 conversion runs, once per distinct shape (`ggml/src/ggml-cuda/fattn.cu`).
+- **A3 [DONE]** `scripts/rx7900xtx/fattn_bw.py` + new perf cases in `tests/test-backend-ops.cpp`
+  (D=256, 4 KV heads, gqa 6, n_kv 16k/64k/113k/256k, batch 1–8, f16/q8_0/q4_0). Reports
+  **GB/s and % of 960 GB/s**, verify cost ratio and kernel choice.
+- **A4 [DONE, different approach]** `scripts/rx7900xtx/decode_depth_fit.py`: llama-bench decode
+  at several depths per model and KV type, fitted into fixed ms/token (→ weight GB/s) and
+  ms per 1k tokens of context (→ KV GB/s, using the attention shapes read from the GGUF).
+  This measures the real model instead of guessed matrix shapes. A per-`MUL_MAT` breakdown
+  is only needed if the fixed part turns out to be the problem.
+- **A5 [MACHINE]** Run `scripts/rx7900xtx/run-step1.sh <model.gguf>` (does A1, A3, A4 in one
+  go; see `scripts/rx7900xtx/README.md`) and share `fattn_bw.md` + `decode_depth_fit.md`.
 
 Decision gate: if q4_0 decode attention sits far below peak and f16 is much faster in A3,
 §1.3 is confirmed → Phase C is the main job.
@@ -208,8 +209,8 @@ Decision gate: if q4_0 decode attention sits far below peak and f16 is much fast
 
 | # | item | output |
 |---|---|---|
-| A2 | FA dispatch logging env var | small patch in `fattn.cu` |
-| A3, A4 | bandwidth benchmark scripts | `scripts/rx7900xtx/bench-*.sh` |
+| A2 | FA dispatch logging env var | **done**: `GGML_CUDA_FATTN_LOG=1` in `fattn.cu` |
+| A3, A4 | bandwidth benchmark scripts | **done**: `scripts/rx7900xtx/` (`run-step1.sh`) |
 | Q1, Q2 | KLD quality harness + threshold proposal | `scripts/rx7900xtx/quality-kld.sh` |
 | C1, C2 | GQA-grouped quantized-KV decode FA + tests | kernel patch + `test-backend-ops` cases |
 | D1, D2 | fork-vs-merged decode and fused-MTP analysis | design notes |
