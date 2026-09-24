@@ -26,15 +26,6 @@ std::string common_speculative_type_to_str(enum common_speculative_type type);
 // return the max number of draft tokens based on the speculative parameters
 int32_t common_speculative_n_max(const common_params_speculative * spec);
 
-// return the max number of draft tokens from the initialized implementations
-int32_t common_speculative_n_max(const common_speculative * spec);
-
-// validate and resolve the unconditional synthetic acceptance rates
-std::vector<double> common_speculative_synth_rates_resolve(const common_params_speculative * spec, int32_t n_max);
-
-// return the conditional synthetic acceptance probabilities
-const std::vector<double> & common_speculative_get_synth_probs(const common_speculative * spec);
-
 common_params common_base_params_to_speculative(const common_params & params);
 
 struct common_speculative_output_limits {
@@ -61,7 +52,7 @@ struct common_speculative_draft_params {
     // can be used to constraint the max draft based on the remaining context size
     int32_t n_max = -1;
 
-    llama_pos   pos0;
+    llama_pos   n_past;
     llama_token id_last;
 
     // TODO: remove in the future by keeping track of the prompt from the _begin() call and the consecutive accept calls
@@ -83,6 +74,11 @@ bool common_speculative_process(common_speculative * spec, const llama_batch & b
 void common_speculative_draft(common_speculative * spec);
 
 // informs the speculative context that n_accepted tokens were accepted by the target model
+// multimodal (vision) requests must bypass speculative decoding: the draft KV
+// injection cannot track mtmd image-chunk positions. Set per sequence at the
+// start of a generation (and reset for text-only requests).
+void common_speculative_set_vision_skip(common_speculative * spec, llama_seq_id seq_id, bool skip);
+
 void common_speculative_accept(common_speculative * spec, llama_seq_id, uint16_t n_accepted);
 
 // (optional) get/set internal state

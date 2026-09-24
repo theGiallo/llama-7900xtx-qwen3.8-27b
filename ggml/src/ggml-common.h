@@ -112,6 +112,9 @@ typedef sycl::half2 ggml_half2;
 #define QI_NVFP4 (QK_NVFP4 / (4 * QR_NVFP4))
 #define QR_NVFP4 2
 
+#define QI_ROCMFP4 (QK_ROCMFP4 / (4 * QR_ROCMFP4))
+#define QR_ROCMFP4 2
+
 #define QI5_0 (QK5_0 / (4 * QR5_0))
 #define QR5_0 2
 
@@ -225,6 +228,19 @@ typedef struct {
     uint8_t qs[QK_NVFP4/2];           // packed 4-bit E2M1 values (32 bytes)
 } block_nvfp4;
 static_assert(sizeof(block_nvfp4) == sizeof(uint8_t)*(QK_NVFP4/QK_NVFP4_SUB) + QK_NVFP4/2, "wrong nvfp4 block size/padding");
+
+#define QK_ROCMFP4 32
+typedef struct {
+    uint8_t qs[QK_ROCMFP4/2]; // packed 4-bit Codebook10 values (16 bytes)
+    uint8_t e[2];             // one unsigned UE4M3 half-scale per 16-element half block
+} block_rocmfp4;
+static_assert(sizeof(block_rocmfp4) == QK_ROCMFP4/2 + 2*sizeof(uint8_t), "wrong rocmfp4 block size/padding");
+
+typedef struct {
+    uint8_t qs[QK_ROCMFP4/2]; // packed 4-bit Codebook10 values (16 bytes)
+    uint8_t e;                // one unsigned UE4M3 half-scale for the whole block
+} block_rocmfp4_fast;
+static_assert(sizeof(block_rocmfp4_fast) == QK_ROCMFP4/2 + sizeof(uint8_t), "wrong rocmfp4 fast block size/padding");
 
 #define QK5_0 32
 typedef struct {
@@ -1128,10 +1144,17 @@ GGML_TABLE_BEGIN(int8_t, kvalues_fp4, 16)
 GGML_TABLE_END()
 #define kvalues_mxfp4 kvalues_fp4
 
+// ROCmFP4: E2M1-derived value set with the largest level retuned from 12 to 10
+// after sampling Qwen3 tensors. Kept separate from kvalues_fp4 so the
+// experimental Strix Halo format never aliases stock MXFP4/NVFP4 behavior.
+GGML_TABLE_BEGIN(int8_t, kvalues_rocmfp4, 16)
+    0, 1, 2, 3, 4, 6, 8, 10, 0, -1, -2, -3, -4, -6, -8, -10,
+GGML_TABLE_END()
+
 #define NGRID_IQ1S 2048
 #define IQ1S_DELTA 0.125f
 #define IQ1M_DELTA 0.125f
-#if defined(GGML_COMMON_IMPL_C) || defined(GGML_COMMON_IMPL_CPP)
+#if defined(GGML_COMMON_IMPL_C)
 GGML_TABLE_BEGIN(uint64_t, iq1s_grid, NGRID_IQ1S)
     0xffffffffffffffff, 0xffffffffffffff01, 0xffffffffffff0000, 0xffffffffffff01ff,
     0xffffffffffff0101, 0xffffffffff00ff00, 0xffffffffff000000, 0xffffffffff01ffff,

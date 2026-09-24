@@ -413,6 +413,53 @@ static void dequantize_row_nvfp4_cuda(
     const int nb = k / QK_NVFP4;
     dequantize_block_nvfp4<<<nb, 32, 0, stream>>>(vx, y, k);
 }
+
+// ROCmFP4: QK=32 per block; dual keeps one UE4M3 scale per 16-element half
+// (like NVFP4), fast keeps a single scale for the whole block. Values are
+// Codebook10, so they decode through kvalues_rocmfp4.
+template <typename dst_t, bool is_fast>
+static __global__ void dequantize_block_q4_0_rocmfp4(
+        const void * __restrict__ vx,
+        dst_t * __restrict__ yy,
+        const int64_t ne) {
+    const int64_t i = blockIdx.x;
+    const int     tid = threadIdx.x; // 0..31: one output value per thread
+
+    const int64_t base = i * QK_ROCMFP4;
+    if (base >= ne) {
+        return;
+    }
+
+    const int sub = tid / (QK_ROCMFP4 / 2); // 0..1: value half (scale selector)
+    const int j   = tid % (QK_ROCMFP4 / 2); // 0..15
+
+    float d;
+    uint8_t q;
+    if (is_fast) {
+        const block_rocmfp4_fast & xb = ((const block_rocmfp4_fast *) vx)[i];
+        d = rocmfp4_ue4m3_to_fp32_half(xb.e);
+        q = xb.qs[j]; // low nibbles of all 16 bytes = values 0..15, high = 16..31
+    } else {
+        const block_rocmfp4 & xb = ((const block_rocmfp4 *) vx)[i];
+        d = rocmfp4_ue4m3_to_fp32_half(xb.e[sub]);
+        q = xb.qs[j];
+    }
+
+    const uint8_t nib = sub ? (uint8_t) (q >> 4) : (uint8_t) (q & 0x0F);
+    yy[base + sub * (QK_ROCMFP4 / 2) + j] =
+        ggml_cuda_cast<dst_t>(d * kvalues_rocmfp4[nib]);
+}
+
+template <typename dst_t, bool is_fast>
+static void dequantize_row_q4_0_rocmfp4_cuda(
+        const void * vx,
+        dst_t * y,
+        const int64_t k,
+        cudaStream_t stream) {
+    GGML_ASSERT(k % QK_ROCMFP4 == 0);
+    const int nb = k / QK_ROCMFP4;
+    dequantize_block_q4_0_rocmfp4<dst_t, is_fast><<<nb, 32, 0, stream>>>(vx, y, k);
+}
 template <typename src_t, typename dst_t>
 static __global__ void convert_unary(
         const void * __restrict__ vx, dst_t * __restrict__ y, const int64_t ne00, const int64_t ne01,
@@ -439,29 +486,6 @@ static __global__ void convert_unary(
     }
 }
 
-template <typename T> struct alignas(sizeof(T)*4) cvt_vec4 { T v[4]; };
-
-// four elements per thread, so a warp moves 512B (RDNA) / 1k (CDNA) per load
-template <typename src_t, typename dst_t>
-static __global__ void convert_unary_cont_vec4(
-        const void * __restrict__ vx, dst_t * __restrict__ y, const int64_t k4) {
-    const int64_t i = (int64_t)blockDim.x*blockIdx.x + threadIdx.x;
-
-    if (i >= k4) {
-        return;
-    }
-
-    const cvt_vec4<src_t> xv = ((const cvt_vec4<src_t> *) vx)[i];
-
-    cvt_vec4<dst_t> yv;
-#pragma unroll
-    for (int j = 0; j < 4; ++j) {
-        yv.v[j] = ggml_cuda_cast<dst_t>(xv.v[j]);
-    }
-
-    ((cvt_vec4<dst_t> *) y)[i] = yv;
-}
-
 template <typename src_t, typename dst_t>
 static void convert_unary_cuda(const void * vx, dst_t * y,
         const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
@@ -475,15 +499,6 @@ static void convert_unary_cuda(const void * vx, dst_t * y,
 
 template <typename src_t, typename dst_t>
 static void convert_unary_cont_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
-    if (k % 4 == 0 &&
-        (uintptr_t) vx % alignof(cvt_vec4<src_t>) == 0 &&
-        (uintptr_t) y  % alignof(cvt_vec4<dst_t>) == 0) {
-        const int64_t k4 = k/4;
-        const int64_t num_blocks = (k4 + CUDA_DEQUANTIZE_BLOCK_SIZE - 1) / CUDA_DEQUANTIZE_BLOCK_SIZE;
-        convert_unary_cont_vec4<src_t, dst_t><<<num_blocks, CUDA_DEQUANTIZE_BLOCK_SIZE, 0, stream>>>(vx, y, k4);
-        return;
-    }
-
     convert_unary_cuda<src_t>(vx, y, k, 1, 1, 1, k, k, k, stream);
 }
 
@@ -535,6 +550,10 @@ to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
             return dequantize_row_mxfp4_cuda;
         case GGML_TYPE_NVFP4:
             return dequantize_row_nvfp4_cuda;
+        case GGML_TYPE_Q4_0_ROCMFP4:
+            return dequantize_row_q4_0_rocmfp4_cuda<nv_bfloat16, false>;
+        case GGML_TYPE_Q4_0_ROCMFP4_FAST:
+            return dequantize_row_q4_0_rocmfp4_cuda<nv_bfloat16, true>;
         case GGML_TYPE_F32:
             return convert_unary_cont_cuda<float>;
         case GGML_TYPE_F16:
@@ -595,6 +614,10 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return dequantize_row_mxfp4_cuda;
         case GGML_TYPE_NVFP4:
             return dequantize_row_nvfp4_cuda;
+        case GGML_TYPE_Q4_0_ROCMFP4:
+            return dequantize_row_q4_0_rocmfp4_cuda<half, false>;
+        case GGML_TYPE_Q4_0_ROCMFP4_FAST:
+            return dequantize_row_q4_0_rocmfp4_cuda<half, true>;
         case GGML_TYPE_F32:
             return convert_unary_cont_cuda<float>;
         case GGML_TYPE_BF16:
@@ -652,6 +675,10 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
             return dequantize_row_mxfp4_cuda;
         case GGML_TYPE_NVFP4:
             return dequantize_row_nvfp4_cuda;
+        case GGML_TYPE_Q4_0_ROCMFP4:
+            return dequantize_row_q4_0_rocmfp4_cuda<float, false>;
+        case GGML_TYPE_Q4_0_ROCMFP4_FAST:
+            return dequantize_row_q4_0_rocmfp4_cuda<float, true>;
         case GGML_TYPE_F16:
             return convert_unary_cont_cuda<half>;
         case GGML_TYPE_BF16:

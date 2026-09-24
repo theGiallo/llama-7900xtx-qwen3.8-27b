@@ -360,6 +360,61 @@ static __device__ __forceinline__ float vec_dot_nvfp4_q8_1(
 
     return sum;
 }
+
+#define VDR_Q4_0_ROCMFP4_Q8_1_MMVQ 4
+#define VDR_Q4_0_ROCMFP4_FAST_Q8_1_MMVQ 2
+#define VDR_Q4_0_ROCMFP4_Q8_1_MMQ 8
+#define VDR_Q4_0_ROCMFP4_FAST_Q8_1_MMQ 8
+
+// ROCmFP4: Codebook10 nibbles (kvalues_rocmfp4) + finite unsigned UE4M3
+// half-scales (rocmfp4_ue4m3_to_fp32_half is in common.cuh). Dual keeps
+// e[0]/e[1] for the two 16-value halves of the block;
+// fast has a single scale per 32-value block.
+static __device__ __forceinline__ float vec_dot_q4_0_rocmfp4_q8_1(
+                                        const void * __restrict__ vbq,
+                                        const block_q8_1 * __restrict__ bq8_1,
+                                        const int32_t & kbx,
+                                        const int32_t & iqs) {
+
+    const block_rocmfp4 * bq4 = (const block_rocmfp4 *) vbq + kbx;
+    const int * q8 = (const int *) bq8_1->qs + iqs;
+
+    int sumi0 = 0;
+    int sumi1 = 0;
+#pragma unroll
+    for (int l = 0; l < VDR_Q4_0_ROCMFP4_Q8_1_MMVQ; ++l) {
+        const int aux_q4 = get_int_b4(bq4->qs, iqs + l);
+        const int2 v = get_int_from_table_16(aux_q4, kvalues_rocmfp4);
+
+        sumi0 = ggml_cuda_dp4a(v.x, q8[l + 0], sumi0);
+        sumi1 = ggml_cuda_dp4a(v.y, q8[l + 4], sumi1);
+    }
+
+    const float db = __low2float(bq8_1->ds);
+    return db * (rocmfp4_ue4m3_to_fp32_half(bq4->e[0]) * sumi0 + rocmfp4_ue4m3_to_fp32_half(bq4->e[1]) * sumi1);
+}
+
+static __device__ __forceinline__ float vec_dot_q4_0_rocmfp4_fast_q8_1(
+                                        const void * __restrict__ vbq,
+                                        const block_q8_1 * __restrict__ bq8_1,
+                                        const int32_t & kbx,
+                                        const int32_t & iqs) {
+
+    const block_rocmfp4_fast * bq4 = (const block_rocmfp4_fast *) vbq + kbx;
+    const int * q8 = (const int *) bq8_1->qs + iqs;
+
+    int sumi = 0;
+#pragma unroll
+    for (int l = 0; l < VDR_Q4_0_ROCMFP4_FAST_Q8_1_MMVQ; ++l) {
+        const int aux_q4 = get_int_b4(bq4->qs, iqs + l);
+        const int2 v = get_int_from_table_16(aux_q4, kvalues_rocmfp4);
+
+        sumi = ggml_cuda_dp4a(v.x, q8[l + 0], sumi);
+        sumi = ggml_cuda_dp4a(v.y, q8[l + 4], sumi);
+    }
+
+    return __low2float(bq8_1->ds) * rocmfp4_ue4m3_to_fp32_half(bq4->e) * sumi;
+}
 #define VDR_Q2_K_Q8_1_MMVQ 1
 #define VDR_Q2_K_Q8_1_MMQ  4
 
@@ -747,20 +802,12 @@ static __device__ __forceinline__ float vec_dot_q2_0_q8_1(
         const int u  = get_int_b4(bq8_1_chunk->qs, j*2+0);
         const int v  = get_int_b4(bq8_1_chunk->qs, j*2+1);
 
-#if defined(GGML_USE_HIP)
-        const uint32_t qx_indices = (q & 0x03) | ((q & 0x0C) << 6) | ((q & 0x30) << 12) | ((q & 0xC0) << 18);
-        const uint32_t qy_bits    = q >> 8;
-        const uint32_t qy_indices = (qy_bits & 0x03) | ((qy_bits & 0x0C) << 6) | ((qy_bits & 0x30) << 12) | ((qy_bits & 0xC0) << 18);
-        const int qx = __builtin_amdgcn_perm(0x020100FF, 0x020100FF, qx_indices);
-        const int qy = __builtin_amdgcn_perm(0x020100FF, 0x020100FF, qy_indices);
-#else
         // unpack even and odd crumbs into byte values
         const int qe = __byte_perm(0x020100FF, 0x020100FF, q >> 0);
         const int qo = __byte_perm(0x020100FF, 0x020100FF, q >> 2);
         // unshuffle values
         const int qx = __byte_perm(qe, qo, 0x5140);
         const int qy = __byte_perm(qe, qo, 0x7362);
-#endif // defined(GGML_USE_HIP)
 
         sumi = ggml_cuda_dp4a(u, qx, sumi);
         sumi = ggml_cuda_dp4a(v, qy, sumi);
@@ -936,20 +983,16 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
     v[0] = q4[0];
     v[1] = q4[4];
 
-    // branchless so nvcc can hoist this out of the ncols_dst loop
     const uint16_t * scales = (const uint16_t *)bq4_K->scales;
-    const int j  = bq8_offset/2;
-    const int jm = j & 1;
-
-    const uint32_t s0 = scales[jm + 0];
-    const uint32_t s2 = scales[jm + 2];
-    const uint32_t s4 = scales[jm + 4];
-
-    const uint32_t hi = (uint32_t) -(int32_t) (j >= 2);
-
     uint16_t aux[2];
-    aux[0] = (uint16_t) (((s0 & 0x3f3f) & ~hi) | ((((s4 >> 0) & 0x0f0f) | ((s0 & 0xc0c0) >> 2)) & hi));
-    aux[1] = (uint16_t) (((s2 & 0x3f3f) & ~hi) | ((((s4 >> 4) & 0x0f0f) | ((s2 & 0xc0c0) >> 2)) & hi));
+    const int j = bq8_offset/2;
+    if (j < 2) {
+        aux[0] = scales[j+0] & 0x3f3f;
+        aux[1] = scales[j+2] & 0x3f3f;
+    } else {
+        aux[0] = ((scales[j+2] >> 0) & 0x0f0f) | ((scales[j-2] & 0xc0c0) >> 2);
+        aux[1] = ((scales[j+2] >> 4) & 0x0f0f) | ((scales[j-0] & 0xc0c0) >> 2);
+    }
     const uint8_t * sc = (const uint8_t *)aux;
     const uint8_t * m  = sc + 2;
 
@@ -985,21 +1028,16 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
     vh[0] = qh[0] >> bq8_offset;
     vh[1] = qh[4] >> bq8_offset;
 
-    // same as q4_K
     const uint16_t * scales = (const uint16_t *)bq5_K->scales;
-    const int j  = bq8_offset/2;
-    const int jm = j & 1;
-
-    const uint32_t s0 = scales[jm + 0];
-    const uint32_t s2 = scales[jm + 2];
-    const uint32_t s4 = scales[jm + 4];
-
-    const uint32_t hi = (uint32_t) -(int32_t) (j >= 2);
-
     uint16_t aux[2];
-    aux[0] = (uint16_t) (((s0 & 0x3f3f) & ~hi) | ((((s4 >> 0) & 0x0f0f) | ((s0 & 0xc0c0) >> 2)) & hi));
-    aux[1] = (uint16_t) (((s2 & 0x3f3f) & ~hi) | ((((s4 >> 4) & 0x0f0f) | ((s2 & 0xc0c0) >> 2)) & hi));
-
+    const int j = bq8_offset/2;
+    if (j < 2) {
+        aux[0] = scales[j+0] & 0x3f3f;
+        aux[1] = scales[j+2] & 0x3f3f;
+    } else {
+        aux[0] = ((scales[j+2] >> 0) & 0x0f0f) | ((scales[j-2] & 0xc0c0) >> 2);
+        aux[1] = ((scales[j+2] >> 4) & 0x0f0f) | ((scales[j-0] & 0xc0c0) >> 2);
+    }
     const uint8_t * sc = (const uint8_t *)aux;
     const uint8_t * m  = sc + 2;
 
