@@ -3819,6 +3819,11 @@ llama_context * llama_init_from_model(
     }
 
     // router_layer >= 0 means n_layer_nextn is repurposed for a router layer, not real MTP
+    if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP) {
+        fprintf(stderr, "DBG MTP check n_layer_nextn=%d router_layer=%d n_layer_all=%u n_ctx=%u type_k=%s\n",
+                (int) model->hparams.n_layer_nextn, (int) model->hparams.router_layer,
+                model->hparams.n_layer_all, params.n_ctx, ggml_type_name(params.type_k));
+    }
     if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
         (model->hparams.n_layer_nextn == 0 || model->hparams.router_layer >= 0)) {
         LLAMA_LOG_WARN("%s: context type MTP requested but model doesn't contain MTP layers\n", __func__);

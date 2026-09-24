@@ -425,6 +425,17 @@ namespace GGUFMeta {
 
     template<typename T>
     bool llama_model_loader::get_key(const std::string & key, T & result, bool required) {
+        {
+            const int kdbg = gguf_find_key(metadata, key.c_str());
+            fprintf(stderr, "DBG get_key probing '%s' -> kid=%d\n", key.c_str(), kdbg);
+            if (kdbg < 0 && key.find("nextn") != std::string::npos) {
+                fprintf(stderr, "DBG metadata key dump (%d keys):\n", gguf_get_n_kv(metadata));
+                for (int i = 0; i < gguf_get_n_kv(metadata); i++) {
+                    fprintf(stderr, "  kv %2d: %s %s\n", i, gguf_get_key(metadata, i),
+                            gguf_type_name(gguf_get_kv_type(metadata, i)));
+                }
+            }
+        }
         auto it = kv_overrides.find(key);
 
         const struct llama_model_kv_override * override =

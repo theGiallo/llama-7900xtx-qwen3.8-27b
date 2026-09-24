@@ -1259,6 +1259,9 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_BLOCK_COUNT,             hparams.n_layer_all);
     GGML_ASSERT(hparams.n_layer_all > 0 && hparams.n_layer_all <= LLAMA_MAX_LAYERS);
     ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS,    hparams.n_layer_nextn,   false);
+        fprintf(stderr, "DBG llm_load_hparams reading nextn_predict_layers for arch %s (line %d)\n", llm_arch_name(ml.get_arch()), __LINE__);
+        { bool found = ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.n_layer_nextn, false); (void)found;
+          fprintf(stderr, "DBG nextn read: found=%d n_layer_nextn=%u n_layer_all=%u\n", (int)found, hparams.n_layer_nextn, hparams.n_layer_all); }
     GGML_ASSERT(hparams.n_layer_nextn <= hparams.n_layer_all);
     ml.get_key(LLM_KV_EXPERT_COUNT,            hparams.n_expert,        false);
     std::fill(hparams.n_expert_used_arr.begin(), hparams.n_expert_used_arr.end(), 0);
