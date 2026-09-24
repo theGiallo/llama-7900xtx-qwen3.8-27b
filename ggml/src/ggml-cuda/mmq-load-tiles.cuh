@@ -138,12 +138,20 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         for (int j = 0; j < 4; ++j) {
             const int q  = qxi[j];
 
+#if defined(GGML_USE_HIP)
+            const uint32_t qx_indices = (q & 0x03) | ((q & 0x0C) << 6) | ((q & 0x30) << 12) | ((q & 0xC0) << 18);
+            const uint32_t qy_bits    = q >> 8;
+            const uint32_t qy_indices = (qy_bits & 0x03) | ((qy_bits & 0x0C) << 6) | ((qy_bits & 0x30) << 12) | ((qy_bits & 0xC0) << 18);
+            const int qx = __builtin_amdgcn_perm(0x020100FF, 0x020100FF, qx_indices);
+            const int qy = __builtin_amdgcn_perm(0x020100FF, 0x020100FF, qy_indices);
+#else
             // unpack even and odd crumbs into byte values
             const int qe = __byte_perm(0x020100FF, 0x020100FF, q >> 0);
             const int qo = __byte_perm(0x020100FF, 0x020100FF, q >> 2);
             // unshuffle values
             const int qx = __byte_perm(qe, qo, 0x5140);
             const int qy = __byte_perm(qe, qo, 0x7362);
+#endif // defined(GGML_USE_HIP)
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
             x_qs[i*sram_stride           + dst_offset + j*2+0] = qx;
@@ -1713,90 +1721,6 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
             x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 2] = q0.y;
             x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 3] = q1.y;
             x_df[i * (2 * MMQ_TILE_NE_K * 2 / QI_NVFP4) + i / (QK_NVFP4_SUB / QI_NVFP4) + ksc + sub] = ggml_cuda_ue4m3_to_fp32(bxi->d[sub]);
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        }
-    }
-}
-
-// ROCmFP4: QK=32 blocks with packed Codebook10 nibbles + unsigned UE4M3
-// scales (2 per block for Q4_0_ROCMFP4, 1 per block for Q4_0_ROCMFP4_FAST).
-// A thread handles a 64-value row (2 blocks) and writes the same tile layout
-// as NVFP4 (16 values per scale slot) so the generic vec_dot kernels work.
-template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_q4_0_rocmfp4(
-        const char * __restrict__ x, int * __restrict__ x_tile, const int kb0, const int i_max, const int stride) {
-    constexpr int warp_size   = ggml_cuda_get_physical_warp_size();
-    constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
-    constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback);
-    constexpr int sram_stride = ggml_cuda_mmq_get_sram_stride(type, J, fallback);
-
-#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-    int   * x_qs = (int   *) x_tile;
-    float * x_df = (float *) (x_qs + MMQ_TILE_NE_K*2);
-#else
-    constexpr tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(GGML_TYPE_NVFP4, I);
-    int   * x_qs = (int   *) x_tile;
-    float * x_df = (float *) (x_qs + txs.qs);
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-
-constexpr bool is_fast = (type == GGML_TYPE_Q4_0_ROCMFP4_FAST);
-    constexpr int block_size = is_fast ? (int) sizeof(block_rocmfp4_fast) : (int) sizeof(block_rocmfp4);
-    constexpr int threads_per_row = MMQ_ITER_K / (2*QK_ROCMFP4); // each thread: 64 values (2 blocks)
-    constexpr int rows_per_warp = warp_size / threads_per_row;
-
-    const int kbx = threadIdx.x % threads_per_row;
-    const int row_in_warp = threadIdx.x / threads_per_row;
-
-#pragma unroll
-    for (int i0 = 0; i0 < I; i0 += rows_per_warp * nwarps) {
-        int i = i0 + threadIdx.y * rows_per_warp + row_in_warp;
-
-        if constexpr (fallback) {
-            i = min(i, i_max);
-        }
-
-        // 64-value row = 2 blocks; blocks are 18/17 bytes so index in row units.
-        // kbx covers a pair of 32-value blocks, same slot layout as NVFP4 (16 int slots
-        // per thread, 4 scale slots per thread).
-        const char * row0 = x + (size_t)(kb0 + i*stride + 2*kbx) * block_size;
-        const char * row1 = row0 + block_size;
-
-        const int kqs = 16 * kbx; // 16 int slots per row
-        const int ksc = 4 * kbx;  // 16 scale slots per row (one per 16 values)
-
-#pragma unroll
-        for (int sub = 0; sub < 4; ++sub) {
-            // ROCmFP4 nibble layout: qs[j] = val(j) | val(j+16) << 4, i.e. the low
-            // nibbles of all 16 bytes are the first 16 values of the block and the
-            // high nibbles are the last 16 (NOT two 8-byte halves like Q4_0).
-            const uint32_t * __restrict__ src_qs = (const uint32_t *) ((sub & 2) ? row1 : row0);
-            const int ihalf = sub & 1; // 0: block values 0..15 (low nibbles), 1: 16..31 (high nibbles)
-
-            const int2 v0 = get_int_from_table_16(src_qs[0], kvalues_rocmfp4);
-            const int2 v1 = get_int_from_table_16(src_qs[1], kvalues_rocmfp4);
-            const int2 v2 = get_int_from_table_16(src_qs[2], kvalues_rocmfp4);
-            const int2 v3 = get_int_from_table_16(src_qs[3], kvalues_rocmfp4);
-
-            float d;
-            if (is_fast) {
-                const uint8_t e = ((const block_rocmfp4_fast *) ((sub & 2) ? row1 : row0))->e;
-                d = rocmfp4_ue4m3_to_fp32_half(e);
-            } else {
-                const uint8_t e = ((const block_rocmfp4 *) ((sub & 2) ? row1 : row0))->e[ihalf];
-                d = rocmfp4_ue4m3_to_fp32_half(e);
-            }
-
-#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-            x_qs[i*sram_stride + kqs + 4 * sub + 0] = ihalf ? v0.y : v0.x;
-            x_qs[i*sram_stride + kqs + 4 * sub + 1] = ihalf ? v1.y : v1.x;
-            x_qs[i*sram_stride + kqs + 4 * sub + 2] = ihalf ? v2.y : v2.x;
-            x_qs[i*sram_stride + kqs + 4 * sub + 3] = ihalf ? v3.y : v3.x;
-            x_df[i*sram_stride + ksc + sub] = d;
-#else
-            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 0] = ihalf ? v0.y : v0.x;
-            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 1] = ihalf ? v1.y : v1.x;
-            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 2] = ihalf ? v2.y : v2.x;
-            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 3] = ihalf ? v3.y : v3.x;
-            x_df[i * (2 * MMQ_TILE_NE_K * 2 / QI_NVFP4) + i / (QK_NVFP4_SUB / QI_NVFP4) + ksc + sub] = d;
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         }
     }
