@@ -17,6 +17,7 @@ add_library(mtmd
             mtmd-audio.cpp
             mtmd-image.cpp
             mtmd.h
+            mtmd-internal.h
             mtmd-helper.cpp
             mtmd-helper-gen.cpp
             mtmd-helper-common.h
@@ -29,6 +30,8 @@ add_library(mtmd
             models/models.h
             models/cogvlm.cpp
             models/conformer.cpp
+            models/deepseek4v.cpp
+            models/dots3note.cpp
             models/dotsocr.cpp
             models/exaone4_5.cpp
             models/gemma4a.cpp
@@ -52,6 +55,7 @@ add_library(mtmd
             models/qwen2vl.cpp
             models/minimax-m3.cpp
             models/qwen3vl.cpp
+            models/ling3vl.cpp
             models/mimovl.cpp
             models/qwen3a.cpp
             models/mimo-audio.cpp
