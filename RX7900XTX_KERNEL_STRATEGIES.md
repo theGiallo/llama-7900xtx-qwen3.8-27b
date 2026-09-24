@@ -6,9 +6,9 @@ the kernels Qwen3.8-27B runs in this branch.
 
 ## Sources
 
-AMD's own sites (amd.com, gpuopen.com, rocm.docs.amd.com) were blocked by the cloud session's
-network policy. Everything below comes from AMD documentation and source that AMD publishes
-on GitHub, and from the LLVM AMDGPU backend, which is the compiler `hipcc` uses:
+Written first from AMD documentation and source that AMD publishes on GitHub, and from the
+LLVM AMDGPU backend, which is the compiler `hipcc` uses. gpuopen.com and rocm.docs.amd.com were
+later allowed and cross-checked (the ISA PDF on www.amd.com was still blocked):
 
 | source | used for |
 |---|---|
@@ -17,6 +17,7 @@ on GitHub, and from the LLVM AMDGPU backend, which is the compiler `hipcc` uses:
 | `ROCm/HIP` `docs/understand/hardware_implementation.rst`, `performance_optimization.rst`, `docs/how-to/performance_guidelines.rst` | RDNA WGP/CU structure, LDS banking, coalescing, occupancy, latency hiding |
 | `llvm/llvm-project` `llvm/docs/AMDGPUUsage.rst` | gfx11 memory model, cache hierarchy, WGP vs CU mode, non-temporal loads, VGPR encoding |
 | `llvm/llvm-project` `llvm/lib/Target/AMDGPU/AMDGPU.td`, `Utils/AMDGPUBaseInfo.cpp`, `IntrinsicsAMDGPU.td` | gfx1100 feature bits: VGPR budget and granule, max waves, dot and WMMA instructions |
+| GPUOpen "RDNA performance guide" (gpuopen.com/learn/rdna-performance-guide) | LDS banking, wave32, SoA layouts |
 | `ROCm/rocm-blogs` register-pressure, LDS bank conflict, matrix-cores posts | compiler resource reports, `__launch_bounds__`, spill avoidance |
 | this repo: `ggml/src/ggml-cuda/*` | what the current kernels actually do |
 
@@ -30,7 +31,7 @@ Items marked *(inferred)* are my conclusions, not statements from the sources.
 | wave size | wave32 native, wave64 supported | gpu-specs, AMDGPUUsage |
 | VGPRs | **1536 per SIMD lane in wave32** (192 KiB per SIMD, 768 KiB per WGP); max 256 per wave; **allocated in blocks of 24** | AMDGPU.td `Feature1536VGPRs` on 11.0.0, `getVGPRAllocGranule` |
 | max waves | **16 per SIMD** | AMDGPU.td `FeatureMaxWavesPerEU16` in `FeatureGFX11` |
-| LDS | **128 KiB per WGP**, one LDS shared by both CUs; HIP doc: 64 banks × 4 B on RDNA3, but LLVM models gfx11 as 32 banks | gpu-specs, AMDGPUUsage, HIP doc, AMDGPU.td `FeatureLDSBankCount32` |
+| LDS | **128 KiB per WGP**, one LDS shared by both CUs; **32 banks × 4 B** (GPUOpen RDNA performance guide and LLVM agree; the HIP doc's "64 banks" doesn't apply to single-workgroup access patterns) | gpu-specs, AMDGPUUsage, GPUOpen RDNA performance guide, AMDGPU.td `FeatureLDSBankCount32` |
 | caches | vector L0 32 KiB per CU; scalar L0 16 KiB per WGP; L1 256 KiB per shader array; L2 6 MiB; **Infinity Cache (MALL) 96 MiB**; 128-byte lines | gpu-specs, AMDGPUUsage, HIP doc |
 | DRAM | 24 GiB GDDR6, ~960 GB/s (384-bit at 20 Gbps; public spec, not in the docs above) | — |
 | matrix cores (WMMA) | 16×16×16: f16 and bf16 in (f32 or f16 accumulate), iu8 and iu4 in (i32 accumulate). **No FP8, FP6 or FP4, neither in matrix cores nor in regular ALUs.** On RDNA3, the A and B operands must be duplicated in both half-waves. | precision-support, IntrinsicsAMDGPU.td, `mma.cuh:81` (`DATA_LAYOUT_I_MAJOR_MIRRORED`) |
@@ -134,7 +135,12 @@ What the code does now (`fattn.cu`, `fattn-vec.cuh`, `fattn-common.cuh`):
   heads**. Each block computes one query head, reading K/V at `head / gqa_ratio`;
 - block `y` walks KV rows `y·nthreads, (y + gridDim.y)·nthreads, …`.
 
-**Refinement of the earlier diagnosis** *(inferred)*: the 6 query heads that share a KV head
+**Step-1 result (`results/step1/2026-09-24-strix/CLOUD_REVIEW.md`):** the re-reads are served
+by caches (q8_0 would need ~1.8 TB/s otherwise) and q4_0 VEC is instruction-bound. Also, the TILE
+kernel packs query heads only in powers of two, so with GQA 6 it groups 2 heads and processes
+each KV block 3×, even for f16. The new kernel should pack all 6 heads.
+
+**Refinement of the earlier diagnosis** *(inferred, now confirmed)*: the 6 query heads that share a KV head
 run in the same dispatch wave with the same `y`, so they read **the same KV addresses at about
 the same time**. Much of the 6× re-read may therefore hit L2 or MALL instead of DRAM. What
 surely remains is 6× the load instructions, 6× the dequantization ALU work and 6× the L2
@@ -167,8 +173,8 @@ Prefill is compute-bound, so WMMA matters, but decode is the priority.
   `mma.cuh` already handles the layout (`DATA_LAYOUT_I_MAJOR_MIRRORED`).
 - FP4 tiles must be expanded to int8 in the tile loader (`mmq-load-tiles.cuh`), so the same
   aligned-repack idea from §2.1 speeds up tile loads.
-- LDS has 32 or 64 banks of 4 B (sources disagree; design for 32). Pad tile rows so a wave's
-  accesses spread across banks (rocm-blogs LDS bank-conflict post).
+- LDS has 32 banks of 4 B. Pad tile rows, or prefer struct-of-arrays, so a wave's accesses
+  spread across banks (GPUOpen RDNA performance guide, rocm-blogs LDS bank-conflict post).
 - Prefill already improved +30–70 % on the merged build; lower priority than decode.
 
 ### 2.4 DeltaNet (`gated_delta_net.cu`, 48 layers)
@@ -223,4 +229,3 @@ into one machine run together with step 1.
 - Whether HIP graphs work under WSL2 with this ROCm version.
 - Whether `rocprofv3` hardware counters work under WSL2. If not, bandwidth has to be inferred
   from timings, as the step-1 scripts do.
-- LDS bank count for gfx11 (HIP docs say 64, LLVM models 32).

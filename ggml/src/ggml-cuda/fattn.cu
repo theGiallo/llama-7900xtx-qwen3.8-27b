@@ -744,6 +744,8 @@ static void ggml_cuda_fattn_need_f16(
 // GGML_CUDA_FATTN_LOG=1: print the FlashAttention kernel choice once per distinct
 // (kernel, head size, Q batch, GQA ratio, K/V types, f16 conversion, n_kv power-of-2 bucket).
 // Diagnostic only; with CUDA/HIP graphs the op runs at capture time, so each shape is still seen.
+// Written straight to stderr: applications filter ggml INFO logs (common maps them to TRACE,
+// llama-bench drops them without -v), which would hide an opt-in diagnostic.
 static void ggml_cuda_fattn_log_choice(const best_fattn_kernel kernel, const ggml_tensor * dst) {
     static const bool enabled = [] {
         const char * env = getenv("GGML_CUDA_FATTN_LOG");
@@ -794,8 +796,8 @@ static void ggml_cuda_fattn_log_choice(const best_fattn_kernel kernel, const ggm
     const size_t v_bytes = ggml_nbytes(V);
     const size_t conv_bytes = (conv_K ? ggml_nelements(K)*sizeof(half) : 0) + (conv_V ? ggml_nelements(V)*sizeof(half) : 0);
 
-    GGML_LOG_INFO("fattn: kernel=%s D=%d/%d n_q=%d n_head=%d n_head_kv=%d gqa=%d K=%s V=%s n_kv=%d "
-                  "K+V=%.1f MiB f16_conv_K=%d f16_conv_V=%d conv_f16=%.1f MiB\n",
+    fprintf(stderr, "fattn: kernel=%s D=%d/%d n_q=%d n_head=%d n_head_kv=%d gqa=%d K=%s V=%s n_kv=%d "
+                    "K+V=%.1f MiB f16_conv_K=%d f16_conv_V=%d conv_f16=%.1f MiB\n",
         kernel_name, int(Q->ne[0]), int(V->ne[0]), int(Q->ne[1]), int(Q->ne[2]), int(K->ne[2]), gqa_ratio,
         ggml_type_name(K->type), ggml_type_name(V->type), int(K->ne[1]),
         (k_bytes + v_bytes)/1048576.0, int(conv_K), int(conv_V), conv_bytes/1048576.0);

@@ -30,7 +30,8 @@ SQL, JSONL and logs. Please share both `.md` files.
 ## Kernel choice logging
 
 `GGML_CUDA_FATTN_LOG=1` (any CUDA/HIP binary, e.g. `llama-server`) prints one line per
-distinct FlashAttention configuration:
+distinct FlashAttention configuration, straight to stderr (not through the ggml log callback, so
+`llama-bench` without `-v` and `llama-server` at default verbosity show it too):
 
 ```
 fattn: kernel=VEC D=256/256 n_q=1 n_head=24 n_head_kv=4 gqa=6 K=q4_0 V=q4_0 n_kv=113408 K+V=... f16_conv_K=0 f16_conv_V=0 conv_f16=0.0 MiB
