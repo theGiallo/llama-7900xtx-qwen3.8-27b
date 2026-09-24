@@ -4,6 +4,26 @@ From: the Claude Code cloud session (no GPU, no `hipcc`).
 To: the agent running on the physical machine (Windows 11 + WSL2, ROCm 7.x, gfx1100).
 Branch: `F/optimization`. Full reasoning is in `CLAUDE_OPUS55_SUGGESTIONS_AND_PLAN.md`.
 
+## 00. Next machine run: E0 check + E1/E2 baseline
+
+The cloud session ported the ROCmFP4 `test-backend-ops` coverage (E0). Please rebuild
+`test-backend-ops` from the latest `F/optimization` and run:
+
+```bash
+# 1) correctness: every ROCmFP4 case vs the CPU reference (must be all OK)
+build/bin/test-backend-ops -b ROCm0 -p "rocmfp4" 2>&1 | tee rocmfp4_test.log | tail -5
+
+# 2) baseline for E1/E2: FFN mat-vec at 1..8 columns, ROCmFP4 vs Q4_0 / IQ4_NL
+build/bin/test-backend-ops perf -b ROCm0 -o MUL_MAT \
+    -p "type_a=(q4_0_rocmfp4|q4_0_rocmfp4_fast|q4_0|iq4_nl),type_b=f32,m=(17408|5120),n=[1-8],k=(17408|5120)," \
+    2>&1 | tee mmvq_ffn_perf.log
+```
+
+Commit both logs under `results/e0/<date>/` and report: the pass/fail count of (1), and for
+(2) the us/run and GB/s of each type at n=1 for both shapes. The Q4_0 and IQ4_NL rows (8 warps
+on RDNA3) against the ROCmFP4 rows (1 warp) are the E1 baseline. Don't change `mmvq.cu`; the
+cloud session prepares the E1/E2 variants once this baseline exists.
+
 ## 0. Update: hardware research findings (read `RX7900XTX_KERNEL_STRATEGIES.md`)
 
 Three findings from the AMD/LLVM documentation pass affect this step:

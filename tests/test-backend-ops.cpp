@@ -8942,6 +8942,7 @@ static const ggml_type all_types[] = {
     GGML_TYPE_Q1_0,
     GGML_TYPE_Q2_0,
     GGML_TYPE_MXFP4, GGML_TYPE_NVFP4,
+    GGML_TYPE_Q4_0_ROCMFP4, GGML_TYPE_Q4_0_ROCMFP4_FAST,
     GGML_TYPE_Q2_K, GGML_TYPE_Q3_K,
     GGML_TYPE_Q4_K, GGML_TYPE_Q5_K,
     GGML_TYPE_Q6_K,
@@ -10119,6 +10120,19 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 1, 64, 256, {1,  1}, {1, 1}));
     }
 
+    // ROCmFP4: real-model shapes (hidden sizes from Qwen3.8-27B)
+    for (ggml_type type_a : {GGML_TYPE_Q4_0_ROCMFP4, GGML_TYPE_Q4_0_ROCMFP4_FAST}) {
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32,   1,   1, 5120, {1, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32,  64,   1, 5120, {1, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32,   1,  64, 5120, {1, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32,  16,  16, 5120, {1, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 128, 128,   96, {1, 1}, {1, 1}));
+    }
+    // J=16 MMQ controls (nvfp4/q4_0), kept as regression guards for the fp4 MMQ paths
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_NVFP4, GGML_TYPE_F32,  16,   9, 256, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0,  GGML_TYPE_F32,  16,   9, 256, {1, 1}, {1, 1}));
+    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0,  GGML_TYPE_F32, 128, 128,  96, {1, 1}, {1, 1}));
+
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q8_0, GGML_TYPE_F32, 6, 4096, 5120, {1, 1}, {1, 1}));
 
     // K not a multiple of 32
@@ -11288,6 +11302,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
             for (ggml_type type_b : {GGML_TYPE_F32}) {
                 test_cases.emplace_back(new test_mul_mat(type_a, type_b, 4096, bs, 14336, {1,  1}, {1, 1}));
             }
+        }
+    }
+
+    // Qwen3.8-27B FFN mat-vec (gate/up: 5120 -> 17408, down: 17408 -> 5120) for decode (1) and
+    // speculative verify (2..8) columns; Q4_0 and IQ4_NL as baselines for the ROCmFP4 types
+    for (ggml_type type_a : {GGML_TYPE_Q4_0_ROCMFP4, GGML_TYPE_Q4_0_ROCMFP4_FAST, GGML_TYPE_Q4_0, GGML_TYPE_IQ4_NL}) {
+        for (int bs : {1, 2, 3, 4, 6, 8}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 17408, bs,  5120, {1, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32,  5120, bs, 17408, {1, 1}, {1, 1}));
         }
     }
 

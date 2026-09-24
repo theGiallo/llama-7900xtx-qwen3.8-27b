@@ -220,7 +220,7 @@ happens during decode, and compare decode tok/s with graphs forced off.
 
 | # | experiment | why | effort |
 |---|---|---|---|
-| **E0** | **Restore ROCmFP4 test coverage**: add `GGML_TYPE_Q4_0_ROCMFP4` and `_FAST` to `test-backend-ops` MUL_MAT (real shapes k=5120/6144/17408, batch 1–8, plus MMQ sizes) and GET_ROWS | the port has **no** ROCmFP4 tests on this branch; nothing below can be judged safely without them | small |
+| **E0** | **DONE (cloud):** ROCmFP4 test coverage restored. Both types added to `all_types` (get/set rows, cpy, MUL_MAT 1–9 columns and MMQ, random shapes, MUL_MAT_ID), plus the fork's Qwen3.8-27B-shaped cases and MMQ guards; perf cases for the FFN shapes (17408×5120, 5120×17408, 1–8 columns, vs Q4_0 and IQ4_NL). The CPU reference passes `test-quantize-fns`. **GPU run pending on the machine.** | correctness gate for everything below | small |
 | E1 | MMVQ nwarps for ROCmFP4 on RDNA3: 1 (now) vs 2/4/8, `ncols_dst` 1 and 2–6, via `test-backend-ops perf -o MUL_MAT` | Finding A; likely part of the regression | tiny |
 | E2 | `get_int_b4` → `get_int_b2`/`get_int_b1` in the ROCmFP4 vec dot | Finding B, quick variant | tiny |
 | E3 | FA perf with the KV size fixed and GQA varied (`nr23` = 1, 2, 3, 6 with 4 KV heads) for q4_0 and f16 | time ∝ gqa ⇒ redundant work dominates; flat ⇒ DRAM-bound | small (perf cases) |
