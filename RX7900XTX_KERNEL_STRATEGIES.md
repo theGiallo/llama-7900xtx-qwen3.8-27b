@@ -7,8 +7,9 @@ the kernels Qwen3.8-27B runs in this branch.
 ## Sources
 
 Written first from AMD documentation and source that AMD publishes on GitHub, and from the
-LLVM AMDGPU backend, which is the compiler `hipcc` uses. gpuopen.com and rocm.docs.amd.com were
-later allowed and cross-checked (the ISA PDF on www.amd.com was still blocked):
+LLVM AMDGPU backend, which is the compiler `hipcc` uses. Later cross-checked against gpuopen.com,
+rocm.docs.amd.com and the **"RDNA3" Instruction Set Architecture reference guide (AMD, Feb 2023)**,
+cited below as *ISA §x* (PDF in the repo root):
 
 | source | used for |
 |---|---|
@@ -29,15 +30,17 @@ Items marked *(inferred)* are my conclusions, not statements from the sources.
 |---|---|---|
 | compute | 96 CUs = 48 WGPs (2 CUs per WGP), 2 × SIMD32 per CU | gpu-specs, HIP hardware doc |
 | wave size | wave32 native, wave64 supported | gpu-specs, AMDGPUUsage |
-| VGPRs | **1536 per SIMD lane in wave32** (192 KiB per SIMD, 768 KiB per WGP); max 256 per wave; **allocated in blocks of 24** | AMDGPU.td `Feature1536VGPRs` on 11.0.0, `getVGPRAllocGranule` |
-| max waves | **16 per SIMD** | AMDGPU.td `FeatureMaxWavesPerEU16` in `FeatureGFX11` |
-| LDS | **128 KiB per WGP**, one LDS shared by both CUs; **32 banks × 4 B** (GPUOpen RDNA performance guide and LLVM agree; the HIP doc's "64 banks" doesn't apply to single-workgroup access patterns) | gpu-specs, AMDGPUUsage, GPUOpen RDNA performance guide, AMDGPU.td `FeatureLDSBankCount32` |
+| VGPRs | **1536 per SIMD lane in wave32** (192 KiB per SIMD, 768 KiB per WGP); max 256 per wave; **allocated in blocks of 24** | ISA §3.3.2.1, AMDGPU.td `Feature1536VGPRs`, `getVGPRAllocGranule` |
+| max waves | **16 per SIMD** (not stated in the ISA guide); a WGP holds up to **32 workgroups**, and single-wave workgroups don't count against that limit or use a barrier | AMDGPU.td `FeatureMaxWavesPerEU16`; ISA §2.3 |
+| LDS | **128 KiB per WGP = two 64 KiB halves of 32 banks × 4 B each**, one half per CU (64 banks in total, which is where the HIP doc's figure comes from). A workgroup gets **at most 64 KiB**, allocated in 1 KiB blocks. In CU mode a wave's LDS stays on its CU's half; in WGP mode it can straddle both. | ISA §3.3.4, §12.1; GPUOpen RDNA guide |
 | caches | vector L0 32 KiB per CU; scalar L0 16 KiB per WGP; L1 256 KiB per shader array; L2 6 MiB; **Infinity Cache (MALL) 96 MiB**; 128-byte lines | gpu-specs, AMDGPUUsage, HIP doc |
 | DRAM | 24 GiB GDDR6, ~960 GB/s (384-bit at 20 Gbps; public spec, not in the docs above) | — |
-| matrix cores (WMMA) | 16×16×16: f16 and bf16 in (f32 or f16 accumulate), iu8 and iu4 in (i32 accumulate). **No FP8, FP6 or FP4, neither in matrix cores nor in regular ALUs.** On RDNA3, the A and B operands must be duplicated in both half-waves. | precision-support, IntrinsicsAMDGPU.td, `mma.cuh:81` (`DATA_LAYOUT_I_MAJOR_MIRRORED`) |
+| matrix cores (WMMA) | 16×16×16: f16 and bf16 in (f32 or f16 accumulate), iu8 and iu4 in (i32 accumulate). **No FP8, FP6 or FP4, neither in matrix cores nor in regular ALUs.** A and B must be replicated (lanes 0–15 into 16–31). **WMMA "works over multiple cycles… and internally uses the DOT instructions"**: it saves registers and operand traffic but is no faster in raw math than `v_dot*` on the same SIMD. Back-to-back dependent WMMAs need a NOP between them. | ISA §7.9, precision-support, `mma.cuh:81` |
 | dot instructions | `v_dot4_i32_iu8` (what `ggml_cuda_dp4a` uses on RDNA3), `v_dot8_i32_iu4`, `v_dot2_f32_f16`, `v_dot2_f32_bf16`, `v_dot2_f16_f16` | AMDGPU.td Dot7/8/9/10/12, `common.cuh:720` |
-| execution mode | default **WGP mode**: a workgroup's waves can run on both CUs of the WGP, which have separate L0 caches. `-mcumode` keeps a workgroup on one CU. | AMDGPUUsage "Memory Model GFX10-GFX11" |
-| non-temporal | `__builtin_nontemporal_load` compiles to `slc=1 dlc=1` on gfx11 (streaming hint) | AMDGPUUsage code-sequence table |
+| dual issue (VOPD, wave32 only) | two independent VALU ops per instruction, **float only** (FMAC/FMA/MUL/ADD/MIN/MAX, `DOT2ACC_F32_F16`, `DOT2ACC_F32_BF16`) plus MOV, CNDMASK, ADD_NC_U32, LSHLREV and AND. **`v_dot4_i32_iu8` and `v_perm_b32` cannot dual-issue.** Strict VGPR-bank rules; the compiler forms these. | ISA §7.6, §16.11 |
+| execution mode | default **WGP mode**: a workgroup's waves can run on all 4 SIMDs of the WGP, which have separate L0 caches. `-mcumode` keeps a workgroup on one CU; the ISA says CU mode **"may provide faster operation since both halves [of LDS] run in parallel"**. | ISA §2.3, AMDGPUUsage "Memory Model GFX10-GFX11" |
+| cache-policy bits | loads: **GLC** = scope (0 = CU, 1 = device; forces an L0 miss); **SLC=1** = stream in L2 (HIT_EVICT); **DLC=1** = **don't allocate in the Infinity Cache (MALL)**. `__builtin_nontemporal_load` sets `slc=1 dlc=1`, so it bypasses MALL allocation. | ISA §4.1.1, AMDGPUUsage code-sequence table |
+| unaligned access | global/LDS accesses may be unaligned only when the driver sets `SH_MEM_CONFIG.alignment_mode = UNALIGNED` (ROCm does, which is why the ROCmFP4 `get_int_b4` loads work). The ISA doesn't give the performance cost. | ISA §3.3.3–3.3.4 |
 
 Occupancy by VGPR count (waves per SIMD = min(16, 1536 / round_up(VGPRs, 24))):
 
@@ -162,8 +165,18 @@ Design for the replacement kernel, sized for this GPU *(inferred from the facts 
   context, then combine (the existing `flash_attn_combine_results` pattern).
 - **Registers:** stay ≤ 96 VGPRs for 16 waves, or accept 120 (12 waves) if it saves reloads.
   Check with the resource report (§3, E5).
-- **Non-temporal K/V loads** (`slc dlc`) so streamed KV doesn't evict the DeltaNet state and
-  partial results from L2/MALL. Worth an A/B test, not a guaranteed win.
+- **Non-temporal K/V loads only in the new kernel.** `slc=1 dlc=1` skips allocation in the
+  Infinity Cache (ISA §4.1.1). Today's VEC kernel *depends* on L2/MALL hits to absorb the 6×
+  per-head re-reads (step 1), so non-temporal KV loads there would turn cache hits into DRAM
+  reads. Once each KV block is read once (grouped kernel), non-temporal KV loads become
+  reasonable.
+- **No global→LDS direct path found in the RDNA3 ISA for compute loads.** Plan on
+  `global_load_b128` into VGPRs, then unpack in registers (or `ds_store` if a tile must be
+  shared). Keep any LDS tile ≤ 64 KiB per workgroup.
+- **Unpacking cost matters** (q4_0 VEC is instruction-bound). `v_perm_b32` and `v_dot4_i32_iu8`
+  can't dual-issue, but `v_dot2acc_f32_f16` can. For K·Q with 6–48 query rows per KV row, the
+  int8 path (q4_0 → int8 via shifts/masks, then `dot4`) and the f16 path (q4_0 → f16, then
+  dual-issued `dot2acc`) are worth comparing on the real kernel.
 
 ### 2.3 Prefill (MMQ with WMMA)
 
@@ -213,19 +226,20 @@ happens during decode, and compare decode tok/s with graphs forced off.
 | E3 | FA perf with the KV size fixed and GQA varied (`nr23` = 1, 2, 3, 6 with 4 KV heads) for q4_0 and f16 | time ∝ gqa ⇒ redundant work dominates; flat ⇒ DRAM-bound | small (perf cases) |
 | E4 | HIP graphs on vs off during decode; count launches per token | launch overhead under WSL2 | small |
 | E5 | Build with `-Rpass-analysis=kernel-resource-usage` (add to `CMAKE_HIP_FLAGS`) and record VGPRs, spills, LDS and occupancy for MMVQ-ROCmFP4, FA-VEC q4_0 D=256, and `gated_delta_net` | shows occupancy cliffs from the table in §1 | small |
-| E6 | Non-temporal loads for weights/KV in MMVQ and FA | protect L2/MALL for reused data | small–medium |
+| E6 | Non-temporal (`slc dlc`) loads for **weights** in MMVQ (read once per token); KV only after E7 | keeps 14 GB/token of weights from churning the 96 MiB Infinity Cache, which today absorbs the attention re-reads | small |
 | E7 | GQA-grouped quantized-KV decode FA (§2.2) | the big attention win | large |
 | E8 | Aligned repacked ROCmFP4 layout + b128 loads (§2.1) | the big weight-path win | large |
-| E9 | `-mcumode` build vs default WGP mode, on the kernels above | L0 locality for workgroup-shared data; could go either way | small |
+| E9 | `-mcumode` build vs default WGP mode, on the kernels above | one L0 per workgroup, and the ISA notes CU mode may be faster (LDS halves in parallel) | small |
 
 E0 comes first: it is the correctness gate for everything else. E1, E2 and E5 can be batched
 into one machine run together with step 1.
 
-## 4. What is not known yet
+## 4. Status of open questions
 
-- Whether the fork's `feat/benchmark` branch set different MMVQ warps for ROCmFP4 (check on the
-  machine).
-- The actual GQA ratio and head counts of the GGUF (inferred 24 query / 4 KV heads, D=256).
+- The fork (`origin/feat/benchmark`) also runs ROCmFP4 MMVQ at 1 warp per block and also uses
+  `get_int_b4`: both are untuned in both builds, not regressions. The fork does carry
+  ROCmFP4 `test-backend-ops` cases (Qwen3.8-27B shapes) that can be ported for E0.
+- Head counts confirmed by the step-1 run: 24 query / 4 KV heads, D=256, GQA 6.
 - Whether HIP graphs work under WSL2 with this ROCm version.
 - Whether `rocprofv3` hardware counters work under WSL2. If not, bandwidth has to be inferred
   from timings, as the step-1 scripts do.
