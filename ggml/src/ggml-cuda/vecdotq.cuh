@@ -379,12 +379,18 @@ static __device__ __forceinline__ float vec_dot_q4_0_rocmfp4_q8_1(
     const block_rocmfp4 * bq4 = (const block_rocmfp4 *) vbq + kbx;
     const int * q8 = (const int *) bq8_1->qs + iqs;
 
+    // Single contiguous 16-byte load of the whole qs field (blocks are packed at
+    // an 18-byte stride, so word loads would be unaligned; one wide load gives
+    // LLVM a contiguous view and avoids 4 separate misaligned 4-byte accesses).
+    uint4 qs4;
+    __builtin_memcpy(&qs4, bq4->qs, sizeof(qs4));
+    const int * q4 = (const int *) &qs4;
+
     int sumi0 = 0;
     int sumi1 = 0;
 #pragma unroll
     for (int l = 0; l < VDR_Q4_0_ROCMFP4_Q8_1_MMVQ; ++l) {
-        const int aux_q4 = get_int_b4(bq4->qs, iqs + l);
-        const int2 v = get_int_from_table_16(aux_q4, kvalues_rocmfp4);
+        const int2 v = get_int_from_table_16(q4[iqs + l], kvalues_rocmfp4);
 
         sumi0 = ggml_cuda_dp4a(v.x, q8[l + 0], sumi0);
         sumi1 = ggml_cuda_dp4a(v.y, q8[l + 4], sumi1);
@@ -403,15 +409,22 @@ static __device__ __forceinline__ float vec_dot_q4_0_rocmfp4_fast_q8_1(
     const block_rocmfp4_fast * bq4 = (const block_rocmfp4_fast *) vbq + kbx;
     const int * q8 = (const int *) bq8_1->qs + iqs;
 
-    int sumi = 0;
-#pragma unroll
-    for (int l = 0; l < VDR_Q4_0_ROCMFP4_FAST_Q8_1_MMVQ; ++l) {
-        const int aux_q4 = get_int_b4(bq4->qs, iqs + l);
-        const int2 v = get_int_from_table_16(aux_q4, kvalues_rocmfp4);
+    // iqs (kqs) is 0 or 2 here; fetch the two words covered by this thread as a
+    // single 8-byte unaligned load and pull the two words from a register value,
+    // so the access stays promotable (a dynamic-indexed uint4 would spill to
+    // local memory on RDNA3 and kill performance).
+    unsigned long long v8;
+    __builtin_memcpy(&v8, (const unsigned char *) bq4->qs + (iqs << 2), sizeof(v8));
+    const int aux_q4_0 = (int) ((uint32_t) v8);
+    const int aux_q4_1 = (int) ((uint32_t) (v8 >> 32));
 
-        sumi = ggml_cuda_dp4a(v.x, q8[l + 0], sumi);
-        sumi = ggml_cuda_dp4a(v.y, q8[l + 4], sumi);
-    }
+    const int2 v0 = get_int_from_table_16(aux_q4_0, kvalues_rocmfp4);
+    const int2 v1 = get_int_from_table_16(aux_q4_1, kvalues_rocmfp4);
+
+    int sumi = ggml_cuda_dp4a(v0.x, q8[0], 0);
+    sumi = ggml_cuda_dp4a(v0.y, q8[4], sumi);
+    sumi = ggml_cuda_dp4a(v1.x, q8[1], sumi);
+    sumi = ggml_cuda_dp4a(v1.y, q8[5], sumi);
 
     return __low2float(bq8_1->ds) * rocmfp4_ue4m3_to_fp32_half(bq4->e) * sumi;
 }
