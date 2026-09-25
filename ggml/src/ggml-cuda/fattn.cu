@@ -714,7 +714,15 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         } else {
             // GQA-grouped vector kernel: one block handles all query heads of a KV head, so the
             // quantized KV is loaded and dequantized once per KV row instead of once per query head.
-            const bool vec_gqa = Q->ne[1] <= 8 && ggml_cuda_fattn_vec_gqa_supported(Q, K, V);
+            // Opt-in (GGML_CUDA_FATTN_VEC_GQA=1): at n_rows <= 8 the benchmark on gfx1100 showed
+            // this kernel is correctness-valid but slower than the incumbents (decode: +21..105%
+            // vs VEC at kv=113..262k q4_0/q8_0; verify n_rows>=3: +114..223% vs TILE+f16conv), so
+            // it is not dispatched by default until the occupancy/register-pressure gap is closed.
+            static const bool s_vec_gqa = [] {
+                const char * e = getenv("GGML_CUDA_FATTN_VEC_GQA");
+                return e != nullptr && atoi(e) != 0;
+            }();
+            const bool vec_gqa = s_vec_gqa && Q->ne[1] <= 8 && ggml_cuda_fattn_vec_gqa_supported(Q, K, V);
             if (vec_gqa) {
                 return BEST_FATTN_KERNEL_VEC_GQA;
             }
