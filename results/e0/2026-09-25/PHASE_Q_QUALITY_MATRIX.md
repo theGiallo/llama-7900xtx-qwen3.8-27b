@@ -24,6 +24,7 @@ dir: `quality_matrix_q8_summary.csv`).
 | STRIX_k4        | 0.0923 | 0.806 | 11.76 | 89.19 | 5.621 | 5.756 | 0.976 |
 | STRIX_k8        | 0.0920 | 0.828 | 12.32 | 89.53 | 5.589 | 5.756 | 0.971 |
 | IQ3XXS (UD)     | 0.0948 | 0.889 | 13.76 | 90.08 | 5.941 | 5.756 | 1.032 |
+| GSQRIQ3 (RCO)   | 0.1482 | 1.528 | 16.09 | 87.19 | 5.634 | 5.756 | 0.979 |
 | Q3KXL (UD)      | 0.0555 | 0.552 | 9.05  | 92.76 | 5.959 | 5.756 | 1.035 |
 
 ### coding_q
@@ -37,6 +38,7 @@ dir: `quality_matrix_q8_summary.csv`).
 | STRIX_k4        | 0.0452 | 0.441 | 1.626 | 88.02 | 3.092 | 3.004 | 1.029 |
 | STRIX_k8        | 0.0427 | 0.405 | 1.769 | 88.11 | 3.083 | 3.004 | 1.026 |
 | IQ3XXS (UD)     | 0.0560 | 0.560 | 2.221 | 89.46 | 3.094 | 3.004 | 1.030 |
+| GSQRIQ3 (RCO)   | 0.0630 | 0.675 | 2.550 | 89.61 | 3.096 | 3.004 | 1.030 |
 | Q3KXL (UD)      | 0.0279 | 0.311 | 1.079 | 92.48 | 3.041 | 3.004 | 1.012 |
 
 ## Findings
@@ -58,11 +60,19 @@ dir: `quality_matrix_q8_summary.csv`).
    (rare-token zeros). Use 99.0% KLD instead: ~0.17-0.44 coding / 0.30-0.89 wiki.
 7. **Corpus matters a lot in absolute KLD.** Code tokens are far more deterministic
    (coding KLD ≈ 0.4-0.6x wiki). Thresholds must be corpus-aware, or per-corpus.
+8. **`GSQ-RCO-IQ3_XXS` (rotation-on IQ3, F:) FAILS the proposed wiki gate** — the
+   only local quant to do so: same-top 87.19 (< 88 %), 99.0 % KLD 1.53 (> 1.0),
+   mean KLD 0.148. It passes coding (same-top 89.61, 99.0 % KLD 0.68). Its wiki PPL
+   (0.979) is better than plain UD-IQ3_XXS (1.032) — again the "good likelihood,
+   worse agreement" signature, but more extreme. Rotation baking does not rescue
+   IQ3_XXS distribution overlap; the gate correctly discriminates it.
 
 ## Recalibrated gate proposal (see QUALITY_THRESHOLDS.md)
 
-All numbers chosen so every currently-shipped local quant passes; STRIX passes at
-the proposed floor but sits at its edge (deliberate — see options in that file).
+All numbers chosen so every currently-shipped **passing-intent** local config
+passes; STRIX passes at the floor but sits at its edge. `GSQ-RCO-IQ3_XXS` is
+excluded by the wiki tail/same-top terms (deliberate — it is the discriminator the
+gate exists to catch; see finding 8).
 
 | metric | proposed threshold |
 |--------|--------------------|
