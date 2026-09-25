@@ -61,24 +61,42 @@ Same-top vs the 90/85 tiers, and the fastest measured daily-load t/s
 band pays the price.** STRIX's real daily-load ceiling is 36.3 t/s (MTP);
 IQ3_XXS 31.6 t/s (DFlash2). The ngram repetitive-win scenarios (80-112 t/s on
 STRIX) are explicitly excluded - they are a prompt-class win, not a model-wide
-speed. So this gate keeps only **Tier A: Q4_K_S and UD-Q3_K_XL**.
+speed. So the daily-load gate keeps only **Tier A: Q4_K_S and UD-Q3_K_XL**.
+
+**USER AMENDMENT (2026-09-25): the Tier B buyout ALSO applies to short-context
+bursts (<= 16k ctx), where STRIX qualifies.**
+
+Measured STRIX+MTP decode vs ctx (RESULTS_tok_per_sec.md section 6): bump-start
+60.4 t/s, 4.5k ctx 43.7 t/s, 113k ctx 36.6 t/s. So STRIX clears the 50 t/s
+buyout for bursts that keep filled context under ~2-4k tokens, and is between
+buyout and daily-load for 4-16k bursts. The ngram repetitive-win scenario
+(80-112 t/s) stays excluded. Decision rule therefore:
+
+- Tier A (>= 90 % same-top, daily load): Q4_K_S, UD-Q3_K_XL - ship.
+- Tier B (85-90 %) + 50 t/s buyout met **either** at daily load (nobody does)
+  **or** in <= 16k bursts (STRIX+MTP yes): STRIX keeps a qualified PASS for
+  short-context loads; IQ3_XXS (31.6 daily, no burst data) stays FAIL.
+- Tier C (< 85 %): reject.
+
+Concretely: STRIX is authorized wherever the workload fits in 4-16k ctx bursts
+(its buyout territory). For 70-113k daily loads the gated pick is UD-Q3_K_XL
+(Tier A, 13.1 GB, DFlash2 37.9 t/s).
 
 Decision rule: ship the best Tier A config that fits 24.5 GB VRAM at 113k-258k
 ctx with q4_0 KV. Both pass; UD-Q3_K_XL (13.1 GB) is the fallback of record
-from Phase Q depth-fit intent. STRIX, if kept at all, is an explicit speed/VRAM
-trade for context headroom, not a quality-passed config — reopen this framing
-only if you intend the buyout to apply at shorter ctx (e.g. 4-16k bursts where
-STRIX+MTP does clear ~44-60 t/s).
+from Phase Q depth-fit intent. STRIX is authorized for <= 16k-ctx bursts via the
+buyout (clears ~44-60 t/s there); for 70-113k daily loads it is documented as a
+speed/VRAM trade, not a quality-passed config.
 
 ## Open items
 
 - Re-run STRIX vs Q8_0 with Q8_0 fully offloaded? (29 GB > VRAM; ngl-32 basis is
   CPU-mixed — acceptable, same context for base and candidates.)
-- User sign-off achieved (2026-09-25): 90/85 same-top tiers + ≥ 50 t/s buyout at
-  113k. On that gate only Q4_K_S and UD-Q3_K_XL clear Tier A; STRIX/IQ3_XXS stay
-  Tier B and their measured daily-load speed (36.3 / 31.6 t/s) does not buy out.
-  Decide whether the 50 t/s buyout applies at 113k only, or also at shorter ctx
-  bursts (4-16k) where STRIX+MTP clears ~44-60 t/s and would pass.
+- User sign-off achieved (2026-09-25): 90/85 same-top tiers + ≥ 50 t/s buyout,
+  applied both at 113k daily load and at <= 16k-ctx bursts. On that gate only
+  Q4_K_S and UD-Q3_K_XL clear Tier A; STRIX clears Tier B via burst buyout
+  (44-60 t/s, crossover at ~4.5k ctx); IQ3_XXS fails (31.6 t/s daily, no burst
+  data).
 - Long-context KLD check pending: 32k ctx, agentic 113k corpus, STRIX × f16/q8_0/
   q4_0 KV (review §2). Rotation recorded. Watch for KV-cache-driven divergence
   that the 4k-ctx matrix cannot see.

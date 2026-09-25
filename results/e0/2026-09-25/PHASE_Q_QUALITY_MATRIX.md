@@ -86,21 +86,23 @@ Two quality tiers on same-top-p **plus a speed buyout** for the lower tier:
 - **Tier A (target): same-top ≥ 90 % both corpora** -> ships, no speed condition.
 - **Tier B (tolerated): 85.0-89.9 %** -> ships ONLY if the fastest daily-load
   config reaches ≥ 50 t/s (measured at 113k ctx, agentic-90k prompt, q4_0 KV;
-  MTP/DFlash2 drafters count, ngram repetitive-win scenarios do not).
+  MTP/DFlash2 drafters count, ngram repetitive-win scenarios do not). Per user
+  amendment (2026-09-25) the buyout ALSO applies at <= 16k ctx bursts, where
+  STRIX+MTP clears ~44-60 t/s.
 - **Tier C: < 85 %** -> reject.
 
 | candidate | same-top (wiki/coding) | tier | fastest @113k | ≥50 t/s? | verdict |
 |-----------|------------------------|------|---------------|----------|---------|
 | Q4_K_S (f16/q8 KV) | 92.7/92.3 | A | 34.0 (MTP) | n/a | **PASS** |
 | UD-Q3_K_XL | 92.8/92.5 | A | 37.9 (DFlash2) | n/a | **PASS** |
+| STRIX (all KV var) | 88.2-89.6 | B | 36.3 (MTP) / 60.4-43.7 @4-16k | 113k: no; <=16k burst: yes | **QUALIFIED - Tier B via short-ctx buyout** |
 | UD-IQ3_XXS | 90.1/89.5 | B (A on wiki only) | 31.6 (DFlash2) | no | FAILS buyout |
-| STRIX (all KV var) | 88.2-89.6 | B | 36.3 (MTP) | no | FAILS buyout |
 | GSQ-RCO-IQ3_XXS | 87.2/89.6 | B | n/a | no | REJECT (also wiki tail) |
 
-Bottom line: only Q4_K_S and UD-Q3_K_XL ship under this framing. STRIX stays a
-speed/VRAM/context-headroom choice, documented as NOT quality-gated. Revisit the
-50 t/s buyout at shorter ctx (4-16k) where STRIX+MTP clears ~44-60 t/s if those
-bursts are the real workload.
+Bottom line: Tier A ships for 70-113k daily loads (Q4_K_S or UD-Q3_K_XL). STRIX
+is authorized for <= 16k-ctx bursts via the speed buyout; document the 4.5k-ctx
+crossover (43.7 t/s < 50) when sizing burst workloads. Revisit if a future
+drafter lifts daily-load speed above 50.
 
 ## Vendor-published data for context (extracted, 2026-09-25)
 
