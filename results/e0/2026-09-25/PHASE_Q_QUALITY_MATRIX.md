@@ -82,3 +82,26 @@ gate exists to catch; see finding 8).
 | PPL ratio | [0.95, 1.05] |
 | Δp RMS | < 15 % (not measured this run — add to harness) |
 | Task spot-check | ≥ 80 % on 5 coding tasks (95 % aspiration stays for benchmark-style scores, per user) |
+
+## Vendor-published data for context (extracted, 2026-09-25)
+
+Full extraction + images: `results/benchmarks/EXTRACTED_BENCHMARK_DATA.md` and
+`results/benchmarks/images/`. Caveat: vendors measure against **BF16/fp16 logits**;
+our matrix is vs unsloth **Q8_0** (-c 4096, wiki/coding corpora). KLD magnitudes are
+therefore NOT directly comparable to our rows above - sanity anchor only.
+
+| vendor quant | vendor mean KLD vs BF16 | our-equivalent row | gate-relevant note |
+|--------------|--------------------------|--------------------|--------------------|
+| UD-Q4_K_XL   | 0.0237 (300-doc span)   | (not measured)  | different ref than our Q4_K_S 0.0468; expect clean |
+| UD-Q3_K_XL   | 0.0806                   | Q3KXL 0.0555 (vs Q8_0) | in family: 2-3 bpw UD quants sit at wiki KLD ~0.08 |
+| UD-Q3_K_S    | ~0.09 (approx from chart) | (not measured)  | |
+| UD-Q2_K_XL   | 0.2209                   | (not measured)  | ~2.7x UD-Q3_K_XL KLD on their span |
+| GSQ-RCO IQ3_XXS | 100.6% zs recovery (vs BF16 tasks) | GSQRIQ3 0.1482 (vs Q8_0) | their zs-avg says lossless; our wiki gate FAILS it (same-top 87.19) - disagreeing signals |
+| GSQ-RCO IQ3_S | 100.2% zs recovery      | (not measured)  | |
+
+Key reading: vendor KLD-vs-BF16 and our KLD-vs-Q8_0 put the *same files* in roughly
+the same ordering (UD-Q3_K_XL clean, GSQ RCO IQ3_XXS the outlier), but GSQ-RCO's own
+benchmark calls its IQ3_XXS task-lossless while our wiki-gate discriminates it.
+Difference is metric (zs task avg vs same-top/KLD overlap) - worth one dedicated
+comparison run (GSQ-RCO IQ3_XXS vs unsloth UD-IQ3_XXS on identical corpora) before
+deciding the gate is over-strict.
