@@ -119,7 +119,7 @@ run_ppl() { # tag model extra_args log_prefix
 # ---------------------------------------------------------------- the matrix
 SUMMARY="$OUTDIR/summary.csv"
 : > "$SUMMARY"
-echo "corpus,candidate,mean_kld,kld_99.0,kld_99.9,same_top_p,mean_ppl_q,mean_ppl_base,ppl_ratio" >> "$SUMMARY"
+echo "corpus,candidate,mean_kld,kld_99.0,kld_99.9,same_top_p,dp_rms,mean_ppl_q,mean_ppl_base,ppl_ratio" >> "$SUMMARY"
 
 for CORPUS in "${CORPORA[@]}"; do
     [[ -f "$CORPUS" ]] || { echo "error: corpus not found: $CORPUS" >&2; exit 1; }
@@ -155,11 +155,12 @@ for CORPUS in "${CORPORA[@]}"; do
             kld99="$(     sed -nE "s/^99.0%   KLD:[[:space:]]*([0-9.]+).*/\1/p"   "$LOG")"
             kld999="$(    sed -nE "s/^99.9%   KLD:[[:space:]]*([0-9.]+).*/\1/p"   "$LOG")"
             same_top="$(  sed -nE "s/^Same top p:[[:space:]]*([0-9.]+).*/\1/p"    "$LOG")"
+            dp_rms="$(    sed -nE "s/^RMS Δp[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p" "$LOG")"
             ppl_q="$(     sed -nE "s/^Mean PPL\\(Q\\)[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p" "$LOG")"
             ppl_base="$(  sed -nE "s/^Mean PPL\\(base\\)[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p" "$LOG")"
             ppl_ratio="$( sed -nE "s/^Mean PPL\\(Q\\)\\/PPL\\(base\\)[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p" "$LOG")"
-            echo "$CNAME,$TAG,$mean_kld,$kld99,$kld999,$same_top,$ppl_q,$ppl_base,$ppl_ratio" >> "$SUMMARY"
-            echo "  $TAG: mean_kld=$mean_kld  kld99=$kld99  kld99.9=$kld999  same_top=$same_top"
+            echo "$CNAME,$TAG,$mean_kld,$kld99,$kld999,$same_top,$dp_rms,$ppl_q,$ppl_base,$ppl_ratio" >> "$SUMMARY"
+            echo "  $TAG: mean_kld=$mean_kld  kld99=$kld99  kld99.9=$kld999  same_top=$same_top  dp_rms=$dp_rms"
         fi
     done
 done

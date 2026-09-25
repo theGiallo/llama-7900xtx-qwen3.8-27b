@@ -13,33 +13,37 @@ dir: `quality_matrix_q8_summary.csv`).
 
 ## Results
 
+Δp RMS (symmetric per-token prob noise, the formerly-missing gate term) is parsed
+from the same `llama-perplexity` summary line (`RMS Δp`, tools/perplexity/perplexity.cpp:2002)
+and backfilled for every run. CSV: `quality_matrix_q8_summary.csv` (now has the `dp_rms` column).
+
 ### wiki_q (natural language)
 
-| candidate | mean KLD | 99.0% KLD | 99.9% KLD | same top % | PPL(Q) | PPL(Q8_0) | PPL ratio |
-|-----------|----------|-----------|-----------|------------|--------|-----------|-----------|
-| Q4KS            | 0.0468 | 0.358 | 9.57  | 92.71 | 5.697 | 5.756 | 0.990 |
-| Q4KS_k4 (KV q4_0) | 0.0518 | 0.360 | 9.52  | 92.59 | 5.713 | 5.756 | 0.992 |
-| Q4KS_k8 (KV q8_0) | 0.0430 | 0.303 | 9.09  | 93.10 | 5.688 | 5.756 | 0.988 |
-| STRIX (fp4)     | 0.0911 | 0.804 | 11.89 | 89.57 | 5.595 | 5.756 | 0.972 |
-| STRIX_k4        | 0.0923 | 0.806 | 11.76 | 89.19 | 5.621 | 5.756 | 0.976 |
-| STRIX_k8        | 0.0920 | 0.828 | 12.32 | 89.53 | 5.589 | 5.756 | 0.971 |
-| IQ3XXS (UD)     | 0.0948 | 0.889 | 13.76 | 90.08 | 5.941 | 5.756 | 1.032 |
-| GSQRIQ3 (RCO)   | 0.1482 | 1.528 | 16.09 | 87.19 | 5.634 | 5.756 | 0.979 |
-| Q3KXL (UD)      | 0.0555 | 0.552 | 9.05  | 92.76 | 5.959 | 5.756 | 1.035 |
+| candidate | mean KLD | 99.0% KLD | 99.9% KLD | same top % | Δp RMS % | PPL(Q) | PPL(Q8_0) | PPL ratio |
+|-----------|----------|-----------|-----------|------------|----------|--------|-----------|-----------|
+| Q4KS            | 0.0468 | 0.358 | 9.57  | 92.71 | 5.70 | 5.697 | 5.756 | 0.990 |
+| Q4KS_k4 (KV q4_0) | 0.0518 | 0.360 | 9.52  | 92.59 | 5.99 | 5.713 | 5.756 | 0.992 |
+| Q4KS_k8 (KV q8_0) | 0.0430 | 0.303 | 9.09  | 93.10 | 5.23 | 5.688 | 5.756 | 0.988 |
+| STRIX (fp4)     | 0.0911 | 0.804 | 11.89 | 89.57 | 7.58 | 5.595 | 5.756 | 0.972 |
+| STRIX_k4        | 0.0923 | 0.806 | 11.76 | 89.19 | 7.79 | 5.621 | 5.756 | 0.976 |
+| STRIX_k8        | 0.0920 | 0.828 | 12.32 | 89.53 | 7.64 | 5.589 | 5.756 | 0.971 |
+| IQ3XXS (UD)     | 0.0948 | 0.889 | 13.76 | 90.08 | 7.70 | 5.941 | 5.756 | 1.032 |
+| GSQRIQ3 (RCO)   | 0.1482 | 1.528 | 16.09 | 87.19 | 10.20 | 5.634 | 5.756 | 0.979 |
+| Q3KXL (UD)      | 0.0555 | 0.552 | 9.05  | 92.76 | 5.94 | 5.959 | 5.756 | 1.035 |
 
 ### coding_q
 
-| candidate | mean KLD | 99.0% KLD | 99.9% KLD | same top % | PPL(Q) | PPL(Q8_0) | PPL ratio |
-|-----------|----------|-----------|-----------|------------|--------|-----------|-----------|
-| Q4KS            | 0.0165 | 0.176 | 0.731 | 92.34 | 3.011 | 3.004 | 1.002 |
-| Q4KS_k4         | 0.0194 | 0.179 | 0.696 | 92.11 | 3.020 | 3.004 | 1.005 |
-| Q4KS_k8         | 0.0167 | 0.172 | 0.622 | 92.46 | 3.012 | 3.004 | 1.003 |
-| STRIX (fp4)     | 0.0425 | 0.400 | 1.713 | 88.19 | 3.080 | 3.004 | 1.025 |
-| STRIX_k4        | 0.0452 | 0.441 | 1.626 | 88.02 | 3.092 | 3.004 | 1.029 |
-| STRIX_k8        | 0.0427 | 0.405 | 1.769 | 88.11 | 3.083 | 3.004 | 1.026 |
-| IQ3XXS (UD)     | 0.0560 | 0.560 | 2.221 | 89.46 | 3.094 | 3.004 | 1.030 |
-| GSQRIQ3 (RCO)   | 0.0630 | 0.675 | 2.550 | 89.61 | 3.096 | 3.004 | 1.030 |
-| Q3KXL (UD)      | 0.0279 | 0.311 | 1.079 | 92.48 | 3.041 | 3.004 | 1.012 |
+| candidate | mean KLD | 99.0% KLD | 99.9% KLD | same top % | Δp RMS % | PPL(Q) | PPL(Q8_0) | PPL ratio |
+|-----------|----------|-----------|-----------|------------|----------|--------|-----------|-----------|
+| Q4KS            | 0.0165 | 0.176 | 0.731 | 92.34 | 4.18 | 3.011 | 3.004 | 1.002 |
+| Q4KS_k4         | 0.0194 | 0.179 | 0.696 | 92.11 | 4.59 | 3.020 | 3.004 | 1.005 |
+| Q4KS_k8         | 0.0167 | 0.172 | 0.622 | 92.46 | 4.24 | 3.012 | 3.004 | 1.003 |
+| STRIX (fp4)     | 0.0425 | 0.400 | 1.713 | 88.19 | 6.42 | 3.080 | 3.004 | 1.025 |
+| STRIX_k4        | 0.0452 | 0.441 | 1.626 | 88.02 | 6.56 | 3.092 | 3.004 | 1.029 |
+| STRIX_k8        | 0.0427 | 0.405 | 1.769 | 88.11 | 6.48 | 3.083 | 3.004 | 1.026 |
+| IQ3XXS (UD)     | 0.0560 | 0.560 | 2.221 | 89.46 | 7.40 | 3.094 | 3.004 | 1.030 |
+| GSQRIQ3 (RCO)   | 0.0630 | 0.675 | 2.550 | 89.61 | 7.69 | 3.096 | 3.004 | 1.030 |
+| Q3KXL (UD)      | 0.0279 | 0.311 | 1.079 | 92.48 | 5.14 | 3.041 | 3.004 | 1.012 |
 
 ## Findings
 
@@ -60,12 +64,20 @@ dir: `quality_matrix_q8_summary.csv`).
    (rare-token zeros). Use 99.0% KLD instead: ~0.17-0.44 coding / 0.30-0.89 wiki.
 7. **Corpus matters a lot in absolute KLD.** Code tokens are far more deterministic
    (coding KLD ≈ 0.4-0.6x wiki). Thresholds must be corpus-aware, or per-corpus.
-8. **`GSQ-RCO-IQ3_XXS` (rotation-on IQ3, F:) FAILS the proposed wiki gate** — the
+8. **Δp RMS (now measured) tracks same-top, is well under any 15% bar.** Worst is
+   GSQRIQ3 wiki 10.20%; every other config ≤ 7.8%. The metric orders candidates
+   almost identically to same-top/KLD (GSQRIQ3 worst, Q3KXL≈Q4KS best), so it
+   adds a per-token-noise check without changing which configs pass/fail.
+9. **`GSQ-RCO-IQ3_XXS` (rotation-on IQ3, F:) FAILS the proposed wiki gate** — the
    only local quant to do so: same-top 87.19 (< 88 %), 99.0 % KLD 1.53 (> 1.0),
    mean KLD 0.148. It passes coding (same-top 89.61, 99.0 % KLD 0.68). Its wiki PPL
    (0.979) is better than plain UD-IQ3_XXS (1.032) — again the "good likelihood,
    worse agreement" signature, but more extreme. Rotation baking does not rescue
    IQ3_XXS distribution overlap; the gate correctly discriminates it.
+   NOTE (review §5): the model card explicitly says all GSQ-RCO files are "standard
+   GGUF and run unmodified in llama.cpp, Ollama, and LM Studio" - no special runtime
+   is required, so this reading is a genuine metric-vs-metric divergence (their
+   5-task recovery vs our token-overlap/wiki tail), not a runtime artifact.
 
 ## Recalibrated gate proposal (see QUALITY_THRESHOLDS.md)
 
@@ -80,7 +92,7 @@ gate exists to catch; see finding 8).
 | Mean KLD | wiki ≤ 0.10, coding ≤ 0.06 (corpus-aware) |
 | 99.0 % KLD | wiki ≤ 1.00, coding ≤ 0.70 (replaces 99.9 % rule) |
 | PPL ratio | [0.95, 1.05] |
-| Δp RMS | < 15 % (not measured this run — add to harness) |
+| Δp RMS | < 15 % (all measured ≤ 10.2 %) | measured via `RMS Δp` line from the tool (added to harness 2026-09-25) |
 | Task spot-check | ≥ 80 % on 5 coding tasks (95 % aspiration stays for benchmark-style scores, per user) |
 
 ## Vendor-published data for context (extracted, 2026-09-25)
