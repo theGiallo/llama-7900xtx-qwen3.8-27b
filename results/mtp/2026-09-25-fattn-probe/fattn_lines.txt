@@ -1,0 +1,10 @@
+fattn: kernel=VEC D=256/256 n_q=2 n_head=24 n_head_kv=4 gqa=6 K=q4_0 V=q4_0 n_kv=256 K+V=0.3 MiB f16_conv_K=0 f16_conv_V=0 conv_f16=0.0 MiB
+fattn: kernel=MMA_F16 D=256/256 n_q=512 n_head=24 n_head_kv=4 gqa=6 K=q4_0 V=q4_0 n_kv=512 K+V=0.6 MiB f16_conv_K=1 f16_conv_V=1 conv_f16=2.0 MiB
+fattn: kernel=MMA_F16 D=256/256 n_q=512 n_head=24 n_head_kv=4 gqa=6 K=q4_0 V=q4_0 n_kv=1024 K+V=1.1 MiB f16_conv_K=1 f16_conv_V=1 conv_f16=4.0 MiB
+fattn: kernel=MMA_F16 D=256/256 n_q=512 n_head=24 n_head_kv=4 gqa=6 K=q4_0 V=q4_0 n_kv=2048 K+V=2.2 MiB f16_conv_K=1 f16_conv_V=1 conv_f16=8.0 MiB
+fattn: kernel=MMA_F16 D=256/256 n_q=512 n_head=24 n_head_kv=4 gqa=6 K=q4_0 V=q4_0 n_kv=4096 K+V=4.5 MiB f16_conv_K=1 f16_conv_V=1 conv_f16=16.0 MiB
+fattn: kernel=MMA_F16 D=256/256 n_q=512 n_head=24 n_head_kv=4 gqa=6 K=q4_0 V=q4_0 n_kv=8192 K+V=9.0 MiB f16_conv_K=1 f16_conv_V=1 conv_f16=32.0 MiB
+fattn: kernel=MMA_F16 D=256/256 n_q=512 n_head=24 n_head_kv=4 gqa=6 K=q4_0 V=q4_0 n_kv=16384 K+V=18.0 MiB f16_conv_K=1 f16_conv_V=1 conv_f16=64.0 MiB
+fattn: kernel=MMA_F16 D=256/256 n_q=512 n_head=24 n_head_kv=4 gqa=6 K=q4_0 V=q4_0 n_kv=32768 K+V=36.0 MiB f16_conv_K=1 f16_conv_V=1 conv_f16=128.0 MiB
+fattn: kernel=MMA_F16 D=256/256 n_q=236 n_head=24 n_head_kv=4 gqa=6 K=q4_0 V=q4_0 n_kv=51456 K+V=56.5 MiB f16_conv_K=1 f16_conv_V=1 conv_f16=201.0 MiB
+fattn: kernel=TILE D=256/256 n_q=4 n_head=24 n_head_kv=4 gqa=6 K=q4_0 V=q4_0 n_kv=51968 K+V=57.1 MiB f16_conv_K=1 f16_conv_V=1 conv_f16=203.0 MiB
