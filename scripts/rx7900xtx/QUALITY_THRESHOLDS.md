@@ -1,14 +1,22 @@
-# Phase Q — quality gate (Q2, recalibrated from first full Q8_0 run)
+# Phase Q — quality gate (Q2, user framing: 90/85 tiers + speed justification)
 
 Pass criteria for the STRIX (and any future) config, measured by
 `quality-kld.sh` against the Q8_0 reference (`Qwen3.8-27B-Q8_0.gguf`, unsloth,
 same tokenizer). Metrics come from the merged build's
 `llama-perplexity --kl-divergence-base` mechanism.
 
-**PENDING USER SIGN-OFF.** Values below were recalculated from the first full
-8-candidate × 2-corpus matrix (see
-`results/e0/2026-09-25/PHASE_Q_QUALITY_MATRIX.md`). Every current local quant
-passes at these levels; STRIX passes but sits at the floor (88.0-89.6 same-top).
+**USER FRAMING (2026-09-25).** Two quality tiers on "same-top-p" plus a speed
+justification for the lower tier:
+
+| tier | same top p (both corpora) | acceptable? |
+|------|---------------------------|-------------|
+| A (target) | ≥ 90.0 % | yes, no speed condition |
+| B (tolerated) | 85.0 - 89.9 % | only if ALSO max-speed capable: the fastest config of that candidate must reach ≥ 50 t/s |
+| C (reject) | < 85.0 % | no |
+
+Speed measured at the real daily load (agentic-90k prompt, 113k ctx, q4_0 KV),
+same environment as `RESULTS_tok_per_sec.md` section 6 (MTP/DFlash2 drafters
+count, ngram repetitive-win scenarios do not count).
 
 ## Metrics (per candidate config)
 
@@ -20,52 +28,57 @@ passes at these levels; STRIX passes but sits at the floor (88.0-89.6 same-top).
   quants in [0.97, 1.035].
 - 99.0 % KLD — stable tail measure (the 99.9 % KLD was dropped: it swings
   0.6-13.8 across corpus+quant and is dominated by rare-token zeros).
+- Δp RMS — per-token symmetric noise vs reference. All runs ≤ 10.2 %; the worst
+  (GSQ-RCO-IQ3_XXS wiki 10.20) also fails the same-top tier anyway.
 
-## Proposed PASS gate (all must hold per corpus)
+## Secondary (non-gating, informational)
 
-| metric           | threshold (recalibrated *)                       | rationale |
-|------------------|--------------------------------------------------|-----------|
-| Same top p       | ≥ 88.0 % (both corpora)                          | STRIX floor (89.6/88.2); Q4_K_S/Q3_K_XL-grade is 92-93 %; the 95 % plan figure is *not* observed for any 4-bit quant vs Q8_0 — keep it as a benchmark-score aspiration instead |
-| Mean KLD         | wiki ≤ 0.10, coding ≤ 0.06                      | corpus-aware; bounds the worst tested (IQ3XXS 0.095/0.056) |
-| 99.0 % KLD       | wiki ≤ 1.00, coding ≤ 0.70                      | stable tail; worst tested IQ3XXS 0.889/0.560 |
-| PPL ratio        | [0.95, 1.05]                                    | all tested in [0.97, 1.035] |
-| Δp RMS           | < 15 %                                          | symmetric noise check; now in harness (added 2026-09-25; parse `RMS Δp` line from the tool). All existing runs ≤ 10.2 % |
-| Task spot-check  | ≥ 80 % pass on 5 real coding tasks              | plan Q2; run on our own prompts; the "95 %" goal belongs here |
+| metric     | observed range        | note |
+|------------|-----------------------|------|
+| Mean KLD   | Q3_K_XL 0.055/0.028 … GSQ-RCO 0.148/0.063 | orders: Q4KS≈Q3KXL < STRIX < IQ3XXS < GSQ-RCO |
+| 99.0 % KLD | Q4KS_k8 0.303 … GSQ-RCO 1.528 | same ordering; discard 99.9 % (rare-token zeros) |
+| PPL ratio  | all in [0.97, 1.035]   | GSQ-RCO is *within* band on PPL but way off on same-top: "good likelihood, wrong token" signature |
+| Δp RMS     | ≤ 10.2 %               | no config near the 15 % guard; ordering matches same-top |
 
-## Alternative: anchor on the real 4-bit quality bar (Q4_K_S)
+A candidate must be at least Tier B to be shipped. Tier B is the "speed buyout":
+price of the 85-90 % quality discount is ≥ 50 t/s.
 
-The 2026-09-25 cloud review (§4) notes the recalibrated table above is tuned to
-admit the current candidates, not to hit the plan's 95 % goal. The strictest
-defensible bar is the actual measured 4-bit ceiling, Q4_K_S:
+## Verdicts from the Q3 matrix on this gate
 
-| metric       | anchor value (Q4_K_S measured) | meaning |
-|--------------|--------------------------------|---------|
-| Mean KLD     | wiki ≤ 0.070, coding ≤ 0.025   | ~Q4_K_S and better; STRIX (0.091/0.043) FAILS |
-| Same top p   | ≥ 90.7 % wiki, ≥ 90.3 % coding | Q4_K_S at tolerance; STRIX (89.6/88.2) FAILS |
+Same-top vs the 90/85 tiers, and the fastest measured daily-load t/s
+(113k ctx; drafter/none):
 
-Under this framing, the "quality gate" is honest about what 4-bit-round-trip
-fidelity looks like, and STRIX must be justified on speed/VRAM grounds rather
-than passing a relaxation. Under the lenient framing (the table above), STRIX
-passes at the floor. **User decides which framing the decision rule uses.**
+| candidate | same-top (wiki/coding) | tier | fastest @113k | 50 t/s? | verdict |
+|-----------|------------------------|------|---------------|---------|---------|
+| Q4_K_S (f16/q8 KV)     | 92.7/92.3 | A | 20.8 none, 34.0 MTP | (not required) | **PASS - Tier A** |
+| Q4_K_S (q4 KV)         | 92.6/92.1 | A | 20.8 none | (not required) | PASS - Tier A (KV variant fine) |
+| UD-Q3_K_XL             | 92.8/92.5 | A | 21.9 none, 37.9 DFlash2 | (not required) | **PASS - Tier A** |
+| UD-IQ3_XXS             | 90.1/89.5 | A on wiki, B on coding | 22.8 none, 31.6 DFlash2 | no (< 50 even drafter) | **FAILS Tier B speed buyout** - 89.5 coding drops it to B, 31.6 t/s doesn't buy out |
+| STRIX (fp4, all KV var) | 88.2-89.6 | B | 21.4 none, 36.3 MTP | no (< 50) | **FAILS Tier B speed buyout** - quality discount NOT paid for |
+| GSQ-RCO-IQ3_XXS       | 87.2/89.6 | B | (not socketed in daily driver) | - | REJECT (Tier B not met on speed) |
 
-Configs gated (Q3 matrix run):
+**Consequence (important): with the 50 t/s buyout at 113k, nobody in the 85-90 %
+band pays the price.** STRIX's real daily-load ceiling is 36.3 t/s (MTP);
+IQ3_XXS 31.6 t/s (DFlash2). The ngram repetitive-win scenarios (80-112 t/s on
+STRIX) are explicitly excluded - they are a prompt-class win, not a model-wide
+speed. So this gate keeps only **Tier A: Q4_K_S and UD-Q3_K_XL**.
 
-Weight quant × KV type × rotation vs Q8_0, on `wiki_q.txt` + `coding_q.txt`:
-
-- STRIX (fp4, rotation baked in) × {q4_0, q8_0, f16} KV — **PASS at floor** (lenient) / **FAIL** (Q4_K_S-anchored)
-- Q4_K_S × {q4_0, q8_0, f16} KV — **PASS** (f16 & 8_0 strongest)
-- UD-IQ3_XXS, UD-Q3_K_XL × f16 KV — **PASS**; UD-IQ3_XXS just above Q4_K_S-anchored line; Q3_K_XL ≈ Q4_K_S fidelity
-
-Decision rule: keep STRIX if it passes (it does, at the edge); otherwise fall
-back to the best PASSING quant × KV variety that fits 24.5 GB VRAM at
-113k-258k context (Q3_K_XL the prime fallback given 92.5-92.8 same-top).
+Decision rule: ship the best Tier A config that fits 24.5 GB VRAM at 113k-258k
+ctx with q4_0 KV. Both pass; UD-Q3_K_XL (13.1 GB) is the fallback of record
+from Phase Q depth-fit intent. STRIX, if kept at all, is an explicit speed/VRAM
+trade for context headroom, not a quality-passed config — reopen this framing
+only if you intend the buyout to apply at shorter ctx (e.g. 4-16k bursts where
+STRIX+MTP does clear ~44-60 t/s).
 
 ## Open items
 
 - Re-run STRIX vs Q8_0 with Q8_0 fully offloaded? (29 GB > VRAM; ngl-32 basis is
   CPU-mixed — acceptable, same context for base and candidates.)
-- User sign-off on the gate framing (lenient vs Q4_K_S-anchored); then fold into
-  CI-ish nightly check if wanted.
+- User sign-off achieved (2026-09-25): 90/85 same-top tiers + ≥ 50 t/s buyout at
+  113k. On that gate only Q4_K_S and UD-Q3_K_XL clear Tier A; STRIX/IQ3_XXS stay
+  Tier B and their measured daily-load speed (36.3 / 31.6 t/s) does not buy out.
+  Decide whether the 50 t/s buyout applies at 113k only, or also at shorter ctx
+  bursts (4-16k) where STRIX+MTP clears ~44-60 t/s and would pass.
 - Long-context KLD check pending: 32k ctx, agentic 113k corpus, STRIX × f16/q8_0/
   q4_0 KV (review §2). Rotation recorded. Watch for KV-cache-driven divergence
   that the 4k-ctx matrix cannot see.
