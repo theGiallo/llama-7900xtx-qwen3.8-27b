@@ -3,6 +3,7 @@
 #include "fattn-mma-f16.cuh"
 #include "fattn-tile.cuh"
 #include "fattn-vec.cuh"
+#include "fattn-vec-gqa.cuh"
 #include "fattn.cuh"
 
 #include <unordered_set>
@@ -520,6 +521,7 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_NONE    =   0,
     BEST_FATTN_KERNEL_TILE    = 200,
     BEST_FATTN_KERNEL_VEC     = 100,
+    BEST_FATTN_KERNEL_VEC_GQA = 150,
     BEST_FATTN_KERNEL_MMA_F16 = 400,
 };
 
@@ -710,6 +712,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                 }
             }
         } else {
+            // GQA-grouped vector kernel: one block handles all query heads of a KV head, so the
+            // quantized KV is loaded and dequantized once per KV row instead of once per query head.
+            const bool vec_gqa = Q->ne[1] <= 8 && ggml_cuda_fattn_vec_gqa_supported(Q, K, V);
+            if (vec_gqa) {
+                return BEST_FATTN_KERNEL_VEC_GQA;
+            }
             if (Q->ne[1] <= 2) {
                 return BEST_FATTN_KERNEL_VEC;
             }
@@ -730,6 +738,10 @@ static void ggml_cuda_fattn_need_f16(
         case BEST_FATTN_KERNEL_MMA_F16:
             need_f16_K = true;
             need_f16_V = true;
+            break;
+        case BEST_FATTN_KERNEL_VEC_GQA:
+            need_f16_K = false;
+            need_f16_V = false;
             break;
         case BEST_FATTN_KERNEL_VEC: {
             const bool f16_fallback = ggml_cuda_get_fattn_vec_case(Q->ne[0], K->type, V->type) == nullptr;
@@ -763,6 +775,7 @@ static void ggml_cuda_fattn_log_choice(const best_fattn_kernel kernel, const ggm
     switch (kernel) {
         case BEST_FATTN_KERNEL_TILE:    kernel_name = "TILE";    break;
         case BEST_FATTN_KERNEL_VEC:     kernel_name = "VEC";     break;
+        case BEST_FATTN_KERNEL_VEC_GQA: kernel_name = "VEC_GQA"; break;
         case BEST_FATTN_KERNEL_MMA_F16: kernel_name = "MMA_F16"; break;
         case BEST_FATTN_KERNEL_NONE:    break;
     }
@@ -837,6 +850,9 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             break;
         case BEST_FATTN_KERNEL_VEC:
             ggml_cuda_flash_attn_ext_vec(ctx, dst);
+            break;
+        case BEST_FATTN_KERNEL_VEC_GQA:
+            ggml_cuda_flash_attn_ext_vec_gqa(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
