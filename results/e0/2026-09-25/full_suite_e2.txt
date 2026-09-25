@@ -1,0 +1,6 @@
+  16437/16437 tests passed
+  Backend ROCm0: [1;32mOK[0m
+Backend 2/2: CPU
+  Skipping
+2/2 backends passed
+[1;32mOK[0m
