@@ -60,6 +60,38 @@ harness PPL(base) 11.984 is the scored-token subset), STRIX fp4 x {f16 KV defaul
 
 AVS: logs in `results/e0/2026-09-25/longctx_kv/` (`.kld` gitignored: 24.4 GB).
 
+### agentic90k @32k round-2 (review Q2 #2): Tier A candidates at 32k
+
+Reuses the round-1 ref `.kld` (`PPL_CTX=32768`, same corpus). Run 2026-09-26.
+
+| candidate | mean KLD | 99.0% KLD | 99.9% KLD | same top % | Δp RMS % | PPL(Q) | PPL(Q8_0) | PPL ratio |
+|-----------|----------|-----------|-----------|------------|----------|--------|-----------|-----------|
+| Q4KS_f16 (UD Q4_K_S) | 0.6366 | 16.63 | 26.61 | 90.299 | 9.85 | 19.459 | 11.984 | 1.624 |
+| Q3KXL_f16 (UD Q3_K_XL) | 0.8981 | 19.35 | 28.03 | 87.164 | 12.01 | 17.896 | 11.984 | 1.493 |
+
+AVS: logs + summary in `results/e0/2026-09-25/longctx_kv_round2/`.
+
+**2026-09-26 correction - the 32k run is a broken measurement.** The cmp chunk rows are
+CUMULATIVE (`mean_and_uncertainty` on the running KLD sums, perplexity.cpp:1878), so the
+chunk2/chunk3 rows above do NOT describe chunks 2/3 alone. Decomposing per-chunk-alone:
+
+| run | chunk1-alone | chunk2-alone | chunk3-alone |
+|-----|--------------|--------------|--------------|
+| ref (house accounting) | 4661 | 1.10 | 1.41 |
+| ref (`.kld` direct decode) | **1109** | 1.09 | 1.41 |
+| STRIX_f16 | 2007 | ~1.09 | ~1.43 |
+| Q4KS_f16 | 4727 | ~1.10 | ~1.42 |
+
+Chunk1 PPL ~1100-4700 and chunks 2-3 PPL ~1.1-1.4 on real C++ code are both impossible for a
+correct measurement: this is a reference-scoring artifact, not a candidate property and not
+corpus duplication (best token-LCP between chunk2 scored span and prior context = 25).
+Q4_K_S and UD-Q3_K_XL (Tier A at 4k) reproduce STRIX's 32k blow-up, and the ref's own save
+(`.kld`) disagrees with its reported chunk1 (1109 vs 4661). The 4k Q8_0 sanity is PPL 9.88 at
+`-c 4096` - the setup is fine short-context, broken in the 32k path only. **Conclusion: do NOT
+gate on any 32k absolute number.** Only the 32k relative order (Q4KS 90.3 > Q3KXL 87.2 ≈ STRIX
+87.0, matching 4k) and the KV-variant comparison (f16 ≈ q8 ≈ q4, a same-model relative check)
+survive.
+
 ## Findings
 
 1. **Everything local passes a sane gate.** No candidate shows catastrophic KLD
@@ -99,14 +131,15 @@ AVS: logs in `results/e0/2026-09-25/longctx_kv/` (`.kld` gitignored: 24.4 GB).
    GGUF and run unmodified in llama.cpp, Ollama, and LM Studio" - no special runtime
    is required, so this reading is a genuine metric-vs-metric divergence (their
    5-task recovery vs our token-overlap/wiki tail), not a runtime artifact.
-10. **Long-context KLD is much noisier, but KV conclusions transfer.** At 32k ctx
-    on the 113k agentic corpus, every STRIX KV variant lands at same-top 86.8-87.0
-    (vs 88.0-89.6 at 4k): expected — more context to diverge over, and this corpus
-    is the harder agentic tail. Δp RMS rises to ~13.6-13.8 % (vs ~6-8 at 4k). Critically,
-    the *within-corpus ordering* is preserved: f16 ~ q8_0 ~ q4_0 across all KLD/same-top
-    terms, so choosing q8_0 KV for daily 70-113k loads costs nothing on token overlap
-    and keeps the PPL-ratio drift small (1.236 vs f16 1.221, min. vs q4_0 1.314). The
-    4k-context KV conclusion is not invalidated at long context.
+10. **Long-context KLD is a broken 32k measurement; only relative ordering transfers.**
+    The 32k runs (rounds 1-2) score all models - ref included - with chunk1 PPL ~1100-4700
+    and chunks 2-3 PPL ~1.1-1.4, which is impossible on real code. Round-2 confirms Tier A
+    candidates (Q4KS, Q3KXL) reproduce the blow-up, so candidates are NOT individually
+    broken; the 32k reference scoring path is. Absolute 32k KLD/same-top/PPL-ratio/Δp must
+    not gate. The two surviving uses: (a) the *same-model* KV comparison (f16 ~ q8_0 ~ q4_0
+    all at same-top 86.8-87.0; 4k KV conclusion transfers), and (b) the 32k relative order
+    (Q4KS 90.3 > Q3KXL 87.2 ≈ STRIX 87.0, consistent with 4k). All gating stays on the 4k
+    matrix.
 
 ## Recalibrated gate (USER FRAMING 2026-09-25; see QUALITY_THRESHOLDS.md)
 

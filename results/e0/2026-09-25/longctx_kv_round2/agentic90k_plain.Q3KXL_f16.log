@@ -1,0 +1,209 @@
+DBG get_key probing 'general.architecture' -> kid=0
+DBG get_key probing 'split.count' -> kid=-1
+DBG get_key probing 'general.file_type' -> kid=45
+DBG get_key probing 'general.name' -> kid=5
+DBG get_key probing 'qwen35.context_length' -> kid=18
+DBG get_key probing 'qwen35.embedding_length' -> kid=19
+DBG get_key probing 'qwen35.embedding_length_out' -> kid=-1
+DBG get_key probing 'qwen35.attention.causal' -> kid=-1
+DBG get_key probing 'qwen35.pooling_type' -> kid=-1
+DBG get_key probing 'qwen35.block_count' -> kid=17
+DBG get_key probing 'qwen35.nextn_predict_layers' -> kid=28
+DBG llm_load_hparams reading nextn_predict_layers for arch qwen35 (line 1262)
+DBG get_key probing 'qwen35.nextn_predict_layers' -> kid=28
+DBG nextn read: found=1 n_layer_nextn=1 n_layer_all=65
+DBG get_key probing 'qwen35.expert_count' -> kid=-1
+DBG get_key probing 'qwen35.expert_group_count' -> kid=-1
+DBG get_key probing 'qwen35.expert_group_used_count' -> kid=-1
+DBG get_key probing 'qwen35.feed_forward_length' -> kid=20
+DBG get_key probing 'qwen35.attention.head_count' -> kid=21
+DBG get_key probing 'qwen35.attention.head_count_kv' -> kid=22
+DBG get_key probing 'qwen35.rope.scaling.finetuned' -> kid=-1
+DBG get_key probing 'qwen35.rope.scaling.original_context_length' -> kid=-1
+DBG get_key probing 'qwen35.rope.freq_base' -> kid=24
+DBG get_key probing 'qwen35.rope.scaling.type' -> kid=-1
+DBG get_key probing 'qwen35.rope.scaling.factor' -> kid=-1
+DBG get_key probing 'qwen35.rope.scale_linear' -> kid=-1
+DBG get_key probing 'qwen35.rope.scaling.attn_factor' -> kid=-1
+DBG get_key probing 'qwen35.rope.scaling.alpha' -> kid=-1
+DBG get_key probing 'qwen35.attention.key_length' -> kid=26
+DBG get_key probing 'qwen35.attention.value_length' -> kid=27
+DBG get_key probing 'qwen35.rope.dimension_count' -> kid=35
+DBG get_key probing 'qwen35.attention.key_length_swa' -> kid=-1
+DBG get_key probing 'qwen35.attention.value_length_swa' -> kid=-1
+DBG get_key probing 'qwen35.rope.dimension_count_swa' -> kid=-1
+DBG get_key probing 'qwen35.attention.layer_norm_rms_epsilon' -> kid=25
+DBG get_key probing 'qwen35.ssm.conv_kernel' -> kid=29
+DBG get_key probing 'qwen35.ssm.inner_size' -> kid=33
+DBG get_key probing 'qwen35.ssm.state_size' -> kid=30
+DBG get_key probing 'qwen35.ssm.time_step_rank' -> kid=32
+DBG get_key probing 'qwen35.ssm.group_count' -> kid=31
+DBG get_key probing 'qwen35.full_attention_interval' -> kid=34
+DBG get_key probing 'tokenizer.ggml.model' -> kid=36
+DBG get_key probing 'tokenizer.ggml.pre' -> kid=37
+DBG get_key probing 'tokenizer.ggml.token_type_count' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.add_space_prefix' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.remove_extra_whitespaces' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.bos_token_id' -> kid=43
+DBG get_key probing 'tokenizer.ggml.eos_token_id' -> kid=41
+DBG get_key probing 'tokenizer.ggml.eot_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.eom_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.unknown_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.seperator_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.padding_token_id' -> kid=42
+DBG get_key probing 'tokenizer.ggml.mask_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_pre_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_suf_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_mid_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_pad_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_rep_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_sep_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.prefix_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.suffix_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.middle_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.add_bos_token' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.add_eos_token' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.add_sep_token' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.normalizer.lowercase' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.normalizer.strip_accents' -> kid=-1
+DBG get_key probing 'general.name' -> kid=5
+DBG get_key probing 'tokenizer.ggml.pre' -> kid=37
+DBG get_key probing 'general.architecture' -> kid=0
+DBG get_key probing 'general.architecture' -> kid=0
+DBG get_key probing 'split.count' -> kid=-1
+DBG get_key probing 'general.file_type' -> kid=45
+DBG get_key probing 'general.name' -> kid=5
+DBG get_key probing 'qwen35.context_length' -> kid=18
+DBG get_key probing 'qwen35.embedding_length' -> kid=19
+DBG get_key probing 'qwen35.embedding_length_out' -> kid=-1
+DBG get_key probing 'qwen35.attention.causal' -> kid=-1
+DBG get_key probing 'qwen35.pooling_type' -> kid=-1
+DBG get_key probing 'qwen35.block_count' -> kid=17
+DBG get_key probing 'qwen35.nextn_predict_layers' -> kid=28
+DBG llm_load_hparams reading nextn_predict_layers for arch qwen35 (line 1262)
+DBG get_key probing 'qwen35.nextn_predict_layers' -> kid=28
+DBG nextn read: found=1 n_layer_nextn=1 n_layer_all=65
+DBG get_key probing 'qwen35.expert_count' -> kid=-1
+DBG get_key probing 'qwen35.expert_group_count' -> kid=-1
+DBG get_key probing 'qwen35.expert_group_used_count' -> kid=-1
+DBG get_key probing 'qwen35.feed_forward_length' -> kid=20
+DBG get_key probing 'qwen35.attention.head_count' -> kid=21
+DBG get_key probing 'qwen35.attention.head_count_kv' -> kid=22
+DBG get_key probing 'qwen35.rope.scaling.finetuned' -> kid=-1
+DBG get_key probing 'qwen35.rope.scaling.original_context_length' -> kid=-1
+DBG get_key probing 'qwen35.rope.freq_base' -> kid=24
+DBG get_key probing 'qwen35.rope.scaling.type' -> kid=-1
+DBG get_key probing 'qwen35.rope.scaling.factor' -> kid=-1
+DBG get_key probing 'qwen35.rope.scale_linear' -> kid=-1
+DBG get_key probing 'qwen35.rope.scaling.attn_factor' -> kid=-1
+DBG get_key probing 'qwen35.rope.scaling.alpha' -> kid=-1
+DBG get_key probing 'qwen35.attention.key_length' -> kid=26
+DBG get_key probing 'qwen35.attention.value_length' -> kid=27
+DBG get_key probing 'qwen35.rope.dimension_count' -> kid=35
+DBG get_key probing 'qwen35.attention.key_length_swa' -> kid=-1
+DBG get_key probing 'qwen35.attention.value_length_swa' -> kid=-1
+DBG get_key probing 'qwen35.rope.dimension_count_swa' -> kid=-1
+DBG get_key probing 'qwen35.attention.layer_norm_rms_epsilon' -> kid=25
+DBG get_key probing 'qwen35.ssm.conv_kernel' -> kid=29
+DBG get_key probing 'qwen35.ssm.inner_size' -> kid=33
+DBG get_key probing 'qwen35.ssm.state_size' -> kid=30
+DBG get_key probing 'qwen35.ssm.time_step_rank' -> kid=32
+DBG get_key probing 'qwen35.ssm.group_count' -> kid=31
+DBG get_key probing 'qwen35.full_attention_interval' -> kid=34
+DBG get_key probing 'tokenizer.ggml.model' -> kid=36
+DBG get_key probing 'tokenizer.ggml.pre' -> kid=37
+DBG get_key probing 'tokenizer.ggml.token_type_count' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.add_space_prefix' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.remove_extra_whitespaces' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.bos_token_id' -> kid=43
+DBG get_key probing 'tokenizer.ggml.eos_token_id' -> kid=41
+DBG get_key probing 'tokenizer.ggml.eot_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.eom_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.unknown_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.seperator_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.padding_token_id' -> kid=42
+DBG get_key probing 'tokenizer.ggml.mask_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_pre_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_suf_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_mid_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_pad_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_rep_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.fim_sep_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.prefix_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.suffix_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.middle_token_id' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.add_bos_token' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.add_eos_token' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.add_sep_token' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.normalizer.lowercase' -> kid=-1
+DBG get_key probing 'tokenizer.ggml.normalizer.strip_accents' -> kid=-1
+DBG get_key probing 'general.name' -> kid=5
+DBG get_key probing 'tokenizer.ggml.pre' -> kid=37
+DBG get_key probing 'general.architecture' -> kid=0
+0.05.952.595 W model has unused tensor blk.64.attn_norm.weight (size = 20480 bytes) -- ignoring
+0.05.952.625 W model has unused tensor blk.64.post_attention_norm.weight (size = 20480 bytes) -- ignoring
+0.05.952.632 W model has unused tensor blk.64.attn_q.weight (size = 51609600 bytes) -- ignoring
+0.05.952.634 W model has unused tensor blk.64.attn_k.weight (size = 5570560 bytes) -- ignoring
+0.05.952.637 W model has unused tensor blk.64.attn_v.weight (size = 5570560 bytes) -- ignoring
+0.05.952.644 W model has unused tensor blk.64.attn_output.weight (size = 25804800 bytes) -- ignoring
+0.05.952.647 W model has unused tensor blk.64.attn_q_norm.weight (size = 1024 bytes) -- ignoring
+0.05.952.649 W model has unused tensor blk.64.attn_k_norm.weight (size = 1024 bytes) -- ignoring
+0.05.952.652 W model has unused tensor blk.64.ffn_gate.weight (size = 73113600 bytes) -- ignoring
+0.05.952.654 W model has unused tensor blk.64.ffn_down.weight (size = 73113600 bytes) -- ignoring
+0.05.952.656 W model has unused tensor blk.64.ffn_up.weight (size = 73113600 bytes) -- ignoring
+0.05.952.660 W model has unused tensor blk.64.nextn.eh_proj.weight (size = 43008000 bytes) -- ignoring
+0.05.952.663 W model has unused tensor blk.64.nextn.enorm.weight (size = 20480 bytes) -- ignoring
+0.05.952.666 W model has unused tensor blk.64.nextn.hnorm.weight (size = 20480 bytes) -- ignoring
+0.05.952.673 W model has unused tensor blk.64.nextn.shared_head_norm.weight (size = 20480 bytes) -- ignoring
+2.43.221.182 I cmn          init: llama threadpool init, n_threads = 12
+2.43.404.639 I 
+2.43.405.132 I system_info: n_threads = 12 (n_threads_batch = 12) / 24 | ROCm : NO_VMM = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+2.51.413.922 I kl_divergence: computing over 3 chunks, n_ctx=32768, batch_size=2048, n_seq=1
+4.00.807.963 I kl_divergence: 69.39 seconds per pass - ETA 3.47 minutes
+
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+   1    3748.1431 ±  271.9587       1.21769 ±    0.03443       2.60323 ±    0.04094    19.423 ±  0.303 %    64.457 ±  0.374 %
+   2      63.4791 ±    2.7147       0.59821 ±    0.01764       1.34186 ±    0.02206    14.454 ±  0.219 %    81.810 ±  0.213 %
+   3      17.8965 ±    0.5332       0.40101 ±    0.01183       0.89812 ±    0.01497    12.012 ±  0.177 %    87.164 ±  0.151 %
+
+====== Perplexity statistics ======
+Mean PPL(Q)                   :  17.896492 ±   0.533153
+Mean PPL(base)                :  11.984294 ±   0.282393
+Cor(ln(PPL(Q)), ln(PPL(base))):  92.79%
+Mean ln(PPL(Q)/PPL(base))     :   0.401008 ±   0.011833
+Mean PPL(Q)/PPL(base)         :   1.493329 ±   0.017670
+Mean PPL(Q)-PPL(base)         :   5.912198 ±   0.290849
+
+====== KL divergence statistics ======
+Mean    KLD:   0.898117 ±   0.014974
+Maximum KLD:  37.516937
+99.9%   KLD:  28.026548
+99.0%   KLD:  19.352383
+95.0%   KLD:   5.799066
+90.0%   KLD:   1.489143
+Median  KLD:   0.000650
+10.0%   KLD:   0.000001
+ 5.0%   KLD:   0.000000
+ 1.0%   KLD:  -0.000001
+ 0.1%   KLD:  -0.000003
+Minimum KLD:  -0.000012
+
+====== Token probability statistics ======
+Mean    Δp:  0.773 ± 0.054 %
+Maximum Δp: 99.998%
+99.9%   Δp: 99.801%
+99.0%   Δp: 57.044%
+95.0%   Δp:  6.745%
+90.0%   Δp:  1.448%
+75.0%   Δp:  0.034%
+Median  Δp:  0.000%
+25.0%   Δp: -0.004%
+10.0%   Δp: -0.499%
+ 5.0%   Δp: -3.317%
+ 1.0%   Δp: -26.030%
+ 0.1%   Δp: -99.522%
+Minimum Δp: -99.962%
+RMS Δp    : 12.012 ± 0.177 %
+Same top p: 87.164 ± 0.151 %
+
+pid:1047 tid:0x74d1252f8300 [Shutdown] [DxcoreLoader] Cannot unload libdxcore.so: (null)

@@ -98,10 +98,18 @@ speed/VRAM trade, not a quality-passed config.
   (44-60 t/s, crossover at ~4.5k ctx); IQ3_XXS fails (31.6 t/s daily, no burst
   data).
 - Long-context KLD check DONE (2026-09-26, review §2): 32k ctx, agentic 113k
-  corpus, STRIX × f16/q8_0/q4_0 KV, rotation ON/baked. Result: f16 ~ q8_0 ~ q4_0
-  on every KLD/same-top term (same-top 86.8-87.0); q4_0 KV only costs PPL-ratio
-  drift (1.314 vs f16 1.221; q8_0 1.236). No KV-cache-driven divergence at long
-  context that the 4k-ctx matrix cannot see - the 4k conclusion transfers.
-  Logs: `results/e0/2026-09-25/longctx_kv/`.
+  corpus, STRIX x {f16, q8_0, q4_0} KV + round-2 Tier A candidates (Q4_K_S,
+  UD-Q3_K_XL), rotation ON/baked. **Conclusive finding: the 32k run is a broken
+  reference-scoring measurement, not a long-context degradation.** Q4KS (Tier A
+  at 4k) reproduces STRIX's blow-up (mean KLD 0.64, same-top 90.3); every model
+  - the Q8_0 ref itself included - scores chunk1-alone PPL ~1100-4700 and
+  chunks 2-3-alone PPL ~1.1-1.4 on real code, which is impossible. The ref's
+  saved `.kld` disagrees with its own reported chunk1 (1109 vs 4661). Corpus
+  duplication ruled out (best token-LCP vs prior context = 25). 4k Q8_0 sanity
+  PPL 9.88. **=> 32k absolute KLD/ratio/Δp must not gate.** Surviving uses only:
+  (a) same-model KV comparison f16 ~ q8_0 ~ q4_0 (all 86.8-87.0 same-top, Q8_0
+  KV headroom intact, 4k KV conclusion transfers); (b) 32k relative order
+  Q4KS 90.3 > Q3KXL 87.2 ~ STRIX 87.0 (consistent with 4k). All tier gates remain
+  on the 4k matrix. Logs: `results/e0/2026-09-25/longctx_kv{,_round2}/`.
 - GSQ-RCO-IQ3_XXS discordance resolved as metric-vs-metric (their 5-task recovery
   vs our token-overlap); no special runtime needed (model card: plain GGUF).

@@ -1,0 +1,19 @@
+[15:18:02] start
+== quality-kld.sh ==
+  ref    : /home/thegiallo/models/Qwen3.8-27B-Q8_0.gguf
+  bin    : /home/thegiallo/llama-rocmfp4-merge/build/bin/llama-perplexity
+  outdir : /mnt/f/programming/llm/qwen3.8-27b_rx7900xtx_inference/llama-rocmfp4-merge/results/e0/2026-09-25/longctx_kv_round2
+  ctx    : 32768
+  corpora: 1
+== using existing base logits: /mnt/f/programming/llm/qwen3.8-27b_rx7900xtx_inference/llama-rocmfp4-merge/results/e0/2026-09-25/longctx_kv_round2/agentic90k_plain.ref.kld
+== comparing on corpus agentic90k_plain
+  [run] Q4KS_f16  (/mnt/f/programming/llm/models/Qwen3.8-27B-Q4_K_S.gguf)
+  Q4KS_f16: mean_kld=0.636550  kld99=16.633951  kld99.9=26.606518  same_top=90.299  dp_rms=9.848
+  [run] Q3KXL_f16  (/mnt/f/programming/llm/models/Qwen3.8-27B-UD-Q3_K_XL.gguf)
+  Q3KXL_f16: mean_kld=0.898117  kld99=19.352383  kld99.9=28.026548  same_top=87.164  dp_rms=12.012
+
+summary: /mnt/f/programming/llm/qwen3.8-27b_rx7900xtx_inference/llama-rocmfp4-merge/results/e0/2026-09-25/longctx_kv_round2/summary.csv
+corpus,candidate,mean_kld,kld_99.0,kld_99.9,same_top_p,dp_rms,mean_ppl_q,mean_ppl_base,ppl_ratio
+agentic90k_plain,Q4KS_f16,0.636550,16.633951,26.606518,90.299,9.848,19.458609,11.984294,1.623676
+agentic90k_plain,Q3KXL_f16,0.898117,19.352383,28.026548,87.164,12.012,17.896492,11.984294,1.493329
+[15:34:25] ALLDONE rc=0

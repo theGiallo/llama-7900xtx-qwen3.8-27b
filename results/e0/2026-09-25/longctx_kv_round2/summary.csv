@@ -1,0 +1,3 @@
+corpus,candidate,mean_kld,kld_99.0,kld_99.9,same_top_p,dp_rms,mean_ppl_q,mean_ppl_base,ppl_ratio
+agentic90k_plain,Q4KS_f16,0.636550,16.633951,26.606518,90.299,9.848,19.458609,11.984294,1.623676
+agentic90k_plain,Q3KXL_f16,0.898117,19.352383,28.026548,87.164,12.012,17.896492,11.984294,1.493329

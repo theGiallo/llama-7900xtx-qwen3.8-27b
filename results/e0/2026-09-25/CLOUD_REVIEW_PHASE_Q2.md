@@ -19,40 +19,46 @@ lengths hasn't been measured and is likely at least as fast. **Request:** one bu
 measurement (e.g. 4.5k context, same prompt class as the STRIX 43.7 / 60.4 t/s rows) for
 UD-Q3_K_XL + DFlash2 before any config keeps STRIX for bursts.
 
-## 2. The 32k run shows a large long-context degradation that isn't KV-related
+## 2. The 32k run is a broken measurement, not a long-context degradation - RESOLVED
 
-The KV comparison holds: f16 ≈ q8_0 ≈ q4_0 on overlap metrics. But the absolute numbers are a red
-flag, not noise:
+Every discriminating test was run. Verdict: **the 32k KLD numbers are a harness/reference
+artifact. They measure nothing about the candidates and cannot gate anything.**
 
-| STRIX | mean KLD | 99 % KLD | PPL ratio |
-|---|---|---|---|
-| 4k ctx (wiki / code) | 0.091 / 0.043 | 0.80 / 0.40 | 0.97 / 1.03 |
-| **32k ctx, f16 KV** (agentic) | **0.936** | **19.4** | **1.221** |
+Evidence (all in `results/e0/2026-09-25/longctx_kv_round2/` and the `.kld` decode):
 
-- A 99th-percentile KLD of ~19 nats means ~1 % of tokens where one model gives the other's
-  choice ~e⁻¹⁹ probability: the two models genuinely disagree there, rather than being slightly
-  noisy.
-- It is the same with **f16 KV**, so it is not KV quantization. It comes from the weights path,
-  the long-context attention/DeltaNet path, or the measurement setup.
-- The reference's own PPL (11.98 on the scored tokens, 19.35 full corpus) is high for
-  agentic/code text that scored ~3.0 at 4k. With more context PPL should normally go **down**.
-  That points at the setup or at the reference run too.
+1. **Q4_K_S and UD-Q3_K_XL show the same blow-up.** Round-2 runs at identical `PPL_CTX=32768`
+   on the same corpus:
+   - Q4KS_f16: mean KLD 0.637, same-top 90.299, PPL ratio 1.624.
+   - Q3KXL_f16: mean KLD 0.898, same-top 87.164, PPL ratio 1.493.
+   Both Tier A candidates (clean ~0.02-0.05 KLD at 4k) jump to ~0.6-0.9 exactly like STRIX
+   (0.936). Discriminating test rule 1 fails candidate-specifically: it is the setup.
+2. **The per-chunk breakdown is impossible for real code.** The chunk rows are *cumulative*
+   (perplexity.cpp prints `mean_and_uncertainty` over the running KLD sums, not per-chunk
+   alone). Decomposing ref and every candidate to per-chunk-alone:
+   - chunk1 is absurdly bad: ref 4661 (house accounting, `.kld` decode 1109), STRIX 2007,
+     Q4KS 4727.
+   - chunks 2-3 are absurdly good: ~1.10 / ~1.42 PPL for ref, STRIX, AND Q4KS. A PPL of 1.1
+     on real mmq.cuh/mma.cuh C++ text is a measurement error, not a model property.
+3. **Not corpus duplication.** Best longest-common-prefix between chunk2's scored span and the
+   full 49k-token prior context is 25 tokens (chunk3: 9 tokens); position identicalness is 409
+   rows of 16383. The reference does *not* leak a repeated 16k block. Scored text is normal
+   CUDA code.
+4. **Reference sanity at 4k is fine.** Q8_0 on the same corpus gives PPL 9.8814 (first 3
+   chunks, `-c 4096`). At 32k the same reference scores chunks 2-3 at PPL ~1.1 - it is broken
+   only in the long-context run.
+5. **Internal save/read inconsistency.** The `.kld` file (the saved log-probs) decodes to
+   chunk1 PPL 1109, while the run's own accounting said 4661 for the same chunk. The save path
+   and the reported path disagree, further proof the 32k bookkeeping is corrupt.
 
-**Discriminating test (one run each, same `PPL_CTX=32768`, same corpus):**
+**What is still usable from 32k:** the *within-corpus relative* order is consistent
+(Q4KS 90.30 > Q3KXL 87.16 ≈ STRIX 87.00) and matches the 4k ordering of the same candidates.
+The KV-cache comparison (f16 ≈ q8_0 ≈ q4_0, all ~86.8-87.0) was a *relative* comparison between
+KV variants of one model, so its conclusion (KV quantization is not the driver) survives.
 
-1. **Q4_K_S vs Q8_0** (and ideally **UD-Q3_K_XL vs Q8_0**, the shipping candidates).
-   - If they also show KLD ≈ 0.9 / PPL ratio ≈ 1.2 → the setup or reference is the problem
-     (see 3–4).
-   - If they show ~0.02–0.06 → **STRIX specifically degrades at long context**: a serious
-     finding for the FP4 path and one more reason to prefer UD-Q3_K_XL.
-2. Look at the **per-chunk** lines (`chunk  PPL  ln(PPL(Q)/PPL(base))  KLD  Δp RMS  same top`)
-   in the logs. Please commit the text logs (not the 24 GB `.kld`). If one chunk carries the
-   blow-up, check what text is there (e.g. a boundary in the concatenated agentic prompt).
-3. Reference sanity: PPL of Q8_0 on the same corpus at `-c 4096` vs `-c 32768`. If 32k is worse,
-   the long-context run of the reference itself is suspect (CPU/GPU split at `--gpu-layers 32`,
-   or batch settings; check that `-b`/`-ub` were the same for base and candidates).
-4. Same-top at 32k (86.8–87.0) is below Tier A's 90 %. Until 1–3 are done, **don't apply the
-   tier gate to 32k numbers**. The Tier A picks (Q4_K_S, UD-Q3_K_XL) were only verified at 4k.
+**What is not usable:** mean KLD, 99 % KLD, PPL ratio, Δp RMS, and any absolute tier check at
+32k. Q4KS "passing" at 90.30 and STRIX "failing" at 87.00 are both scores from a broken
+reference scoring path and must not gate. **The tier gate stays on the 4k matrix numbers.**
+Rule 4 recommendation: confirm.
 
 ## 3. Gate framing
 
