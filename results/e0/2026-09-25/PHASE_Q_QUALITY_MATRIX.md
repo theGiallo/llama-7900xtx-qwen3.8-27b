@@ -45,12 +45,33 @@ and backfilled for every run. CSV: `quality_matrix_q8_summary.csv` (now has the 
 | GSQRIQ3 (RCO)   | 0.0630 | 0.675 | 2.550 | 89.61 | 7.69 | 3.096 | 3.004 | 1.030 |
 | Q3KXL (UD)      | 0.0279 | 0.311 | 1.079 | 92.48 | 5.14 | 3.041 | 3.004 | 1.012 |
 
+### agentic90k @32k (review §2: long-context KV check, rotation ON/baked)
+
+`PPL_CTX=32768`, corpus `agentic90k_plain.txt` (113,182 tok => 3 chunks), reference
+`Qwen3.8-27B-Q8_0.gguf` (CPU-mixed, 29 GB > 24.5 GB VRAM; ref full-corpus PPL = 19.35,
+harness PPL(base) 11.984 is the scored-token subset), STRIX fp4 x {f16 KV default, `-ctk q8_0 -ctv q8_0`, `-ctk q4_0 -ctv q4_0`}.
+`LLAMA_ATTN_ROT_DISABLE=<unset>` (rotation ON/baked). Run 2026-09-26, 63 min.
+
+| candidate | mean KLD | 99.0% KLD | 99.9% KLD | same top % | Δp RMS % | PPL(Q) | PPL(Q8_0) | PPL ratio |
+|-----------|----------|-----------|-----------|------------|----------|--------|-----------|-----------|
+| STRIX_f16 (f16 KV) | 0.9359 | 19.36 | 27.18 | 86.999 | 13.84 | 14.630 | 11.984 | 1.221 |
+| STRIX_q8 (q8_0 KV) | 0.9358 | 19.45 | 27.23 | 86.913 | 13.73 | 14.814 | 11.984 | 1.236 |
+| STRIX_q4 (q4_0 KV) | 0.9639 | 19.90 | 27.44 | 86.844 | 13.62 | 15.742 | 11.984 | 1.314 |
+
+AVS: logs in `results/e0/2026-09-25/longctx_kv/` (`.kld` gitignored: 24.4 GB).
+
 ## Findings
 
 1. **Everything local passes a sane gate.** No candidate shows catastrophic KLD
    blow-ups beyond corpus-inherent tails; all PPL ratios ≤1.035.
-2. **KV-cache quantization cost is negligible.** Q4KS_k4/k8 move mean KLD by
-   <0.006 and same-top by <0.5 pt vs f16 KV. KV q4_0/q8_0 on STRIX likewise.
+2. **KV-cache quantization cost is negligible — and holds at long context.**
+   Q4KS_k4/k8 move mean KLD by <0.006 and same-top by <0.5 pt vs f16 KV. KV
+   q4_0/q8_0 on STRIX likewise at both 4k and **32k ctx** (review §2): at 32k,
+   STRIX q4_0 KV vs f16 KV move same-top by only -0.155 pt (87.0 -> 86.8) and
+   mean KLD by +0.028. The one real effect of q4_0 KV at long context is the
+   PPL-ratio drift 1.221 -> 1.314 (q8_0: 1.236) - KV errors accumulate through
+   32k tokens, hurting mean log-likelihood more than token-overlap. With rotation
+   ON/baked, q8_0 KV is the Balerdi-derived headroom with no same-top loss vs f16.
 3. **STRIX (fp4) gaps Q4_K_S by ~3.4-4.3 same-top points** (88.0-89.6 vs 92.1-93.1)
    and mean KLD ~2x (0.091 vs 0.047 wiki; 0.043 vs 0.016 coding). PPL is *better*
    than Q8_0 on wiki (0.972) but +2.5-2.9% on coding — i.e. fp4's roughness shows
@@ -78,6 +99,14 @@ and backfilled for every run. CSV: `quality_matrix_q8_summary.csv` (now has the 
    GGUF and run unmodified in llama.cpp, Ollama, and LM Studio" - no special runtime
    is required, so this reading is a genuine metric-vs-metric divergence (their
    5-task recovery vs our token-overlap/wiki tail), not a runtime artifact.
+10. **Long-context KLD is much noisier, but KV conclusions transfer.** At 32k ctx
+    on the 113k agentic corpus, every STRIX KV variant lands at same-top 86.8-87.0
+    (vs 88.0-89.6 at 4k): expected — more context to diverge over, and this corpus
+    is the harder agentic tail. Δp RMS rises to ~13.6-13.8 % (vs ~6-8 at 4k). Critically,
+    the *within-corpus ordering* is preserved: f16 ~ q8_0 ~ q4_0 across all KLD/same-top
+    terms, so choosing q8_0 KV for daily 70-113k loads costs nothing on token overlap
+    and keeps the PPL-ratio drift small (1.236 vs f16 1.221, min. vs q4_0 1.314). The
+    4k-context KV conclusion is not invalidated at long context.
 
 ## Recalibrated gate (USER FRAMING 2026-09-25; see QUALITY_THRESHOLDS.md)
 

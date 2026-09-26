@@ -13,6 +13,7 @@
 *.gcov
 *.gguf
 *.gguf.json
+*.kld
 *.lastModified
 *.log
 *.metallib

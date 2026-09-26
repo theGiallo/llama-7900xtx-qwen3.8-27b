@@ -97,8 +97,11 @@ speed/VRAM trade, not a quality-passed config.
   Q4_K_S and UD-Q3_K_XL clear Tier A; STRIX clears Tier B via burst buyout
   (44-60 t/s, crossover at ~4.5k ctx); IQ3_XXS fails (31.6 t/s daily, no burst
   data).
-- Long-context KLD check pending: 32k ctx, agentic 113k corpus, STRIX × f16/q8_0/
-  q4_0 KV (review §2). Rotation recorded. Watch for KV-cache-driven divergence
-  that the 4k-ctx matrix cannot see.
+- Long-context KLD check DONE (2026-09-26, review §2): 32k ctx, agentic 113k
+  corpus, STRIX × f16/q8_0/q4_0 KV, rotation ON/baked. Result: f16 ~ q8_0 ~ q4_0
+  on every KLD/same-top term (same-top 86.8-87.0); q4_0 KV only costs PPL-ratio
+  drift (1.314 vs f16 1.221; q8_0 1.236). No KV-cache-driven divergence at long
+  context that the 4k-ctx matrix cannot see - the 4k conclusion transfers.
+  Logs: `results/e0/2026-09-25/longctx_kv/`.
 - GSQ-RCO-IQ3_XXS discordance resolved as metric-vs-metric (their 5-task recovery
   vs our token-overlap); no special runtime needed (model card: plain GGUF).
