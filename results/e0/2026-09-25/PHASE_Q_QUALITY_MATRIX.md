@@ -149,8 +149,10 @@ Two quality tiers on same-top-p **plus a speed buyout** for the lower tier:
 - **Tier B (tolerated): 85.0-89.9 %** -> ships ONLY if the fastest daily-load
   config reaches ≥ 50 t/s (measured at 113k ctx, agentic-90k prompt, q4_0 KV;
   MTP/DFlash2 drafters count, ngram repetitive-win scenarios do not). Per user
-  amendment (2026-09-25) the buyout ALSO applies at <= 16k ctx bursts, where
-  STRIX+MTP clears ~44-60 t/s.
+  amendment (2026-09-25) the buyout ALSO applies at <= 16k ctx bursts: measured
+  sweep (2026-09-27, fork q4_0 KV rot off `-np 1`): STRIX+MTP 73.6/49.0/57.1 @
+  5tok/4.5k/16k vs UD-Q3_K_XL+DFlash2 51.5/35.6/34.2. STRIX wins every <=16k
+  point; the earlier 4-6 t/s collapse was n_slots=4 VRAM overflow, `-np 1` fixes.
 - **Tier C: < 85 %** -> reject.
 
 | candidate | same-top (wiki/coding) | tier | fastest @113k | ≥50 t/s? | verdict |

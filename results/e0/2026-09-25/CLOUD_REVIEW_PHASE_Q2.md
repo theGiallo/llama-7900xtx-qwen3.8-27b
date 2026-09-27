@@ -13,11 +13,30 @@ Reviewed `bb42eb2`…`2827d4d`.
 (UD-Q3_K_XL q8_0 KV: 24.62 ms fixed, 23.8 t/s @131072.)
 
 UD-Q3_K_XL is smaller (13.1 vs 13.8 GB), closer to the reference (Tier A vs Tier B), and faster
-at short and long context. On this data STRIX has no remaining advantage. The Tier B "burst
-buyout" still formally lets STRIX through at ≤ 16k, but UD-Q3_K_XL + DFlash2 at the same burst
-lengths hasn't been measured and is likely at least as fast. **Request:** one burst
-measurement (e.g. 4.5k context, same prompt class as the STRIX 43.7 / 60.4 t/s rows) for
-UD-Q3_K_XL + DFlash2 before any config keeps STRIX for bursts.
+at short and long context. On this data STRIX has no remaining advantage at daily-load depths.
+The Tier B "burst buyout" still formally lets STRIX through at ≤ 16k. The requested burst
+measurement for UD-Q3_K_XL + DFlash2 is now done (2026-09-27, §1 RESOLVED below):
+
+**§1 RESOLVED - burst sweep, fork build-wsl, q4_0 KV, rot off, `-np 1`, temp 0 top_k 1,
+64-token burst (cold first request, fill240k did not exist so fill200k text class):**
+
+| fill | STRIX+MTP n5 | UD-Q3_K_XL+DFlash2 n5 p0.4 |
+|---|---:|---:|
+| ~5 tok | **73.6** | 51.5 |
+| ~4.5k | **49.0** | 35.6-36.2 |
+| ~16k | **57.1** | 34.2-41.4 (warm) |
+| ~32k | **44.5** | 23.6-32.0 |
+| ~64k | 38.7 | **43.9** (acc 0.91/5.25) |
+
+- STRIX+MTP wins every ≤16k burst point (49-73 vs 34-51), so the short-ctx buyout holds; the
+  earlier "4.27-6.83 t/s collapse" was `-np 1` vs default n_slots=4 (4 x 32k q4_0 KV = VRAM
+  overflow, `common_fit_params: ... to free device memory`, abort). With `-np 1` every point
+  is healthy.
+- The candidate overtakes at 64k+ (43.9 vs 38.7, acc 0.91/5.25) and matches history at 113k
+  (37.9 vs 36.6). Daily-load (70-113k) and burst (≤16k) improve on different models: STRIX for
+  short bursts, UD-Q3_K_XL+DFlash2 for long context.
+- 4.5k reference class sanity: STRIX+MTP 49.0 today vs 43.7 historical (same fill class,
+  warm cache within noise), so the sweep is comparable to rows 44/45.
 
 ## 2. The 32k run is a broken measurement, not a long-context degradation - RESOLVED
 
