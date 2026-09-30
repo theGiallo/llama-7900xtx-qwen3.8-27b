@@ -36,6 +36,17 @@
 #include <windows.h>
 #endif
 
+#include <chrono>
+struct server_spec_prof {
+    bool enabled = getenv("SERVER_SPEC_PROF") != nullptr;
+    double t_draft = 0, t_decode = 0, t_period = 0;
+    long   n_tok = 0;
+    int    n = 0;
+    bool   have_last = false, drafted_this_round = false;
+    std::chrono::steady_clock::time_point last_dec_end;
+};
+static server_spec_prof g_sp_prof;
+
 constexpr int HTTP_POLLING_SECONDS = 1;
 
 static common_speculative_output_limits server_output_limits(const common_params & params) {
@@ -3042,9 +3053,12 @@ private:
 
         // generate the actual drafts (if any)
         if (!drafting.empty()) {
+            const auto t_sp0 = std::chrono::steady_clock::now();
             queue_tasks.yield_to_queue([&]() {
                 common_speculative_draft(spec.get());
             });
+            g_sp_prof.t_draft += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_sp0).count();
+            g_sp_prof.drafted_this_round = true;
         }
 
         // make checkpoints if needed
@@ -3678,12 +3692,31 @@ private:
         // yield to the queue, so we can still handle metrics tasks while decoding
         // note: the sync is done here too, so that the wait is also covered by the yield
         int ret = 0;
+        const auto t_sd0 = std::chrono::steady_clock::now();
         queue_tasks.yield_to_queue([&]() {
             ret = llama_decode(ctx_tgt, batch_view);
             if (ret == 0 && has_output) {
                 llama_synchronize(ctx_tgt);
             }
         });
+        if (g_sp_prof.enabled && batch_view.n_tokens <= 16 && g_sp_prof.drafted_this_round) {
+            const auto t_sd1 = std::chrono::steady_clock::now();
+            g_sp_prof.t_decode += std::chrono::duration<double, std::milli>(t_sd1 - t_sd0).count();
+            g_sp_prof.n_tok    += batch_view.n_tokens;
+            if (g_sp_prof.have_last) {
+                g_sp_prof.t_period += std::chrono::duration<double, std::milli>(t_sd0 - g_sp_prof.last_dec_end).count();
+            }
+            g_sp_prof.last_dec_end = t_sd1;
+            g_sp_prof.have_last = true;
+            g_sp_prof.n++;
+            if (g_sp_prof.n % 16 == 0) {
+                const double n = (double) g_sp_prof.n;
+                fprintf(stderr, "SPECPROF rounds=%d avg_verify_cols=%.2f | per round ms: draft=%.2f verify_decode=%.2f gap_between_decodes=%.2f (gap includes draft) => total=%.2f\n",
+                        g_sp_prof.n, g_sp_prof.n_tok / n, g_sp_prof.t_draft / n, g_sp_prof.t_decode / n, g_sp_prof.t_period / n,
+                        (g_sp_prof.t_period + g_sp_prof.t_decode) / n);
+            }
+        }
+        g_sp_prof.drafted_this_round = false;
 
         if (ret != 0) {
             {

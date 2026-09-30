@@ -4200,9 +4200,14 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 struct ggml_cuda_op_prof {
     bool enabled = getenv("GGML_CUDA_OP_PROF") != nullptr;
     std::vector<cudaEvent_t> ev;
-    std::map<std::string, std::pair<double,long>> acc;
-    long n_graphs = 0;
-    double total_ms = 0;
+    struct sig_t {
+        std::map<std::string, std::pair<double,long>> acc;
+        long n_graphs = 0;
+        double total_ms = 0;
+    };
+    std::map<int, sig_t> sigs;
+    bool gstats = getenv("GGML_CUDA_GRAPH_STATS") != nullptr;
+    std::map<std::pair<int,int>, long> gstat; // (n_nodes, used_graph_replay) -> calls
     static std::string key(const ggml_tensor * n) {
         std::string k = ggml_op_name(n->op);
         if (n->op == GGML_OP_MUL_MAT || n->op == GGML_OP_MUL_MAT_ID) {
@@ -4212,12 +4217,22 @@ struct ggml_cuda_op_prof {
         return k;
     }
     ~ggml_cuda_op_prof() {
-        if (!enabled || n_graphs == 0) return;
-        std::vector<std::pair<std::string, std::pair<double,long>>> v(acc.begin(), acc.end());
-        std::sort(v.begin(), v.end(), [](auto & a, auto & b){ return a.second.first > b.second.first; });
-        fprintf(stderr, "OPPROF graphs=%ld total_ms_per_graph=%.3f\n", n_graphs, total_ms / n_graphs);
-        for (auto & e : v) {
-            fprintf(stderr, "OPPROF %8.3f ms/graph %6.1f calls/graph  %s\n", e.second.first / n_graphs, (double) e.second.second / n_graphs, e.first.c_str());
+        if (gstats) {
+            for (auto & [k, v] : gstat) {
+                fprintf(stderr, "GRAPHSTAT n_nodes=%d %s calls=%ld\n", k.first, k.second ? "graph_replay" : "eager", v);
+            }
+        }
+        if (!enabled) return;
+        for (auto & [nn, sg] : sigs) {
+            if (sg.n_graphs < 4) continue;
+            std::vector<std::pair<std::string, std::pair<double,long>>> v(sg.acc.begin(), sg.acc.end());
+            std::sort(v.begin(), v.end(), [](auto & a, auto & b){ return a.second.first > b.second.first; });
+            fprintf(stderr, "OPPROF ==== graph n_nodes=%d graphs=%ld total_ms_per_graph=%.3f\n", nn, sg.n_graphs, sg.total_ms / sg.n_graphs);
+            int shown = 0;
+            for (auto & e : v) {
+                if (shown++ >= 18) break;
+                fprintf(stderr, "OPPROF %8.3f ms/graph %6.1f calls/graph  %s\n", e.second.first / sg.n_graphs, (double) e.second.second / sg.n_graphs, e.first.c_str());
+            }
         }
     }
 };
@@ -4416,14 +4431,15 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
             if (prof_on && !prof_idx.empty()) {
                 CUDA_CHECK(cudaEventRecord(g_op_prof.ev[prof_idx.size()], cuda_ctx->stream(cuda_ctx->device, 0)));
                 CUDA_CHECK(cudaEventSynchronize(g_op_prof.ev[prof_idx.size()]));
+                auto & sg = g_op_prof.sigs[cgraph->n_nodes];
                 for (size_t j = 0; j < prof_idx.size(); ++j) {
                     float ms = 0.0f;
                     CUDA_CHECK(cudaEventElapsedTime(&ms, g_op_prof.ev[j], g_op_prof.ev[j + 1]));
-                    auto & a = g_op_prof.acc[ggml_cuda_op_prof::key(cgraph->nodes[prof_idx[j]])];
+                    auto & a = sg.acc[ggml_cuda_op_prof::key(cgraph->nodes[prof_idx[j]])];
                     a.first += ms; a.second += 1;
-                    g_op_prof.total_ms += ms;
+                    sg.total_ms += ms;
                 }
-                g_op_prof.n_graphs++;
+                sg.n_graphs++;
             }
         }
 
@@ -4525,6 +4541,9 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     }
 #endif // USE_CUDA_GRAPH
 
+    if (g_op_prof.gstats) {
+        g_op_prof.gstat[{cgraph->n_nodes, use_cuda_graph ? 1 : 0}]++;
+    }
     if (use_cuda_graph && cuda_graph_update_required) {
         // Start CUDA graph capture
         {
