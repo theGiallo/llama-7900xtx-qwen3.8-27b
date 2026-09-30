@@ -4187,6 +4187,42 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     return 0;
 }
 
+// GGML_CUDA_OP_PROF=1 (eager mode only, i.e. with GGML_CUDA_DISABLE_GRAPHS=1): per-op GPU time via events on the
+// main stream, printed at exit. Time between two consecutive node-start events is attributed to the first node, so
+// fused ops and concurrent-stream regions are attributed to the node that starts them. Diagnostic only.
+#include <map>
+#include <string>
+#include <algorithm>
+#if defined(GGML_USE_HIP)
+#define cudaEventCreate hipEventCreate
+#define cudaEventElapsedTime hipEventElapsedTime
+#endif
+struct ggml_cuda_op_prof {
+    bool enabled = getenv("GGML_CUDA_OP_PROF") != nullptr;
+    std::vector<cudaEvent_t> ev;
+    std::map<std::string, std::pair<double,long>> acc;
+    long n_graphs = 0;
+    double total_ms = 0;
+    static std::string key(const ggml_tensor * n) {
+        std::string k = ggml_op_name(n->op);
+        if (n->op == GGML_OP_MUL_MAT || n->op == GGML_OP_MUL_MAT_ID) {
+            char b[96]; snprintf(b, sizeof b, " %s %ldx%ld n%ld", ggml_type_name(n->src[0]->type), (long)n->src[0]->ne[0], (long)n->src[0]->ne[1], (long)n->src[1]->ne[1]);
+            k += b;
+        }
+        return k;
+    }
+    ~ggml_cuda_op_prof() {
+        if (!enabled || n_graphs == 0) return;
+        std::vector<std::pair<std::string, std::pair<double,long>>> v(acc.begin(), acc.end());
+        std::sort(v.begin(), v.end(), [](auto & a, auto & b){ return a.second.first > b.second.first; });
+        fprintf(stderr, "OPPROF graphs=%ld total_ms_per_graph=%.3f\n", n_graphs, total_ms / n_graphs);
+        for (auto & e : v) {
+            fprintf(stderr, "OPPROF %8.3f ms/graph %6.1f calls/graph  %s\n", e.second.first / n_graphs, (double) e.second.second / n_graphs, e.first.c_str());
+        }
+    }
+};
+static ggml_cuda_op_prof g_op_prof;
+
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
     bool graph_evaluated_or_captured = false;
 
@@ -4285,8 +4321,19 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 stream_ctx.concurrent_events.clear();
             }
 
+            std::vector<int> prof_idx;
+            const bool prof_on = g_op_prof.enabled && !use_cuda_graph;
+            if (prof_on) {
+                while ((int) g_op_prof.ev.size() < cgraph->n_nodes + 1) {
+                    cudaEvent_t e; CUDA_CHECK(cudaEventCreate(&e)); g_op_prof.ev.push_back(e);
+                }
+            }
             for (int i = 0; i < cgraph->n_nodes; i++) {
                 ggml_tensor * node = cgraph->nodes[i];
+                if (prof_on && !ggml_cuda_is_view_or_noop(node) && (node->flags & GGML_TENSOR_FLAG_COMPUTE) != 0 && !is_concurrent_event_active) {
+                    CUDA_CHECK(cudaEventRecord(g_op_prof.ev[prof_idx.size()], cuda_ctx->stream(cuda_ctx->device, 0)));
+                    prof_idx.push_back(i);
+                }
                 if (is_concurrent_event_active) {
                     GGML_ASSERT(concurrent_event);
 
@@ -4365,6 +4412,18 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 if (!is_concurrent_event_active) {
                     try_launch_concurrent_event(node);
                }
+            }
+            if (prof_on && !prof_idx.empty()) {
+                CUDA_CHECK(cudaEventRecord(g_op_prof.ev[prof_idx.size()], cuda_ctx->stream(cuda_ctx->device, 0)));
+                CUDA_CHECK(cudaEventSynchronize(g_op_prof.ev[prof_idx.size()]));
+                for (size_t j = 0; j < prof_idx.size(); ++j) {
+                    float ms = 0.0f;
+                    CUDA_CHECK(cudaEventElapsedTime(&ms, g_op_prof.ev[j], g_op_prof.ev[j + 1]));
+                    auto & a = g_op_prof.acc[ggml_cuda_op_prof::key(cgraph->nodes[prof_idx[j]])];
+                    a.first += ms; a.second += 1;
+                    g_op_prof.total_ms += ms;
+                }
+                g_op_prof.n_graphs++;
             }
         }
 

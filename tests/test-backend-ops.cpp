@@ -11341,6 +11341,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // DRAM-bound decode/verify mat-vec per quant type (Qwen3.8-27B FFN shapes). bs={8,1} gives 8 distinct
+    // weight matrices per call (src1 has 8 channels, nr=1), so the working set (8 x 35-57 MB) exceeds the 96 MiB
+    // Infinity Cache and the run measures DRAM, not MALL. Effective weight GB/s = 8*m*k*bpw/8 / time.
+    for (ggml_type type_a : {GGML_TYPE_Q4_0, GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_XS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ3_XXS,
+                             GGML_TYPE_Q3_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_Q8_0,
+                             GGML_TYPE_Q4_0_ROCMFP4}) {
+        for (int bs : {1, 2, 4, 8}) {
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 17408, bs,  5120, {8, 1}, {1, 1}));
+            test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32,  5120, bs, 17408, {8, 1}, {1, 1}));
+        }
+    }
+
     // Q4_K multi-column mat-vec
     for (int64_t m : {4096, 6144, 6272, 14336}) {
         for (int bs : {1, 2, 3, 4, 8}) {
