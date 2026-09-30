@@ -2593,7 +2593,18 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
 }
 
 static const void * ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
-    return cgraph->nodes[0];
+    // One graph slot per (first node, small batch size). Speculative verify batches change size from round to
+    // round; with a single slot every size change resets the warmup and the round runs eagerly (~4500 launches
+    // for the 27B hybrid verify graph), so most verify passes never replayed a graph. Large batches (prefill)
+    // and batch 1 keep the original key. The key is only used as a map key, never dereferenced.
+    // GGML_CUDA_GRAPH_KEY_BY_BATCH=0 restores the old behaviour (A/B).
+    static const bool by_batch = getenv("GGML_CUDA_GRAPH_KEY_BY_BATCH") == nullptr || atoi(getenv("GGML_CUDA_GRAPH_KEY_BY_BATCH")) != 0;
+    const ggml_tensor * n0 = cgraph->nodes[0];
+    const int64_t n_tok = n0->ne[1];
+    if (by_batch && n_tok > 1 && n_tok <= 16) {
+        return (const void *) ((uintptr_t) n0 ^ ((uintptr_t) n_tok << 56));
+    }
+    return n0;
 }
 
 static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph) {
