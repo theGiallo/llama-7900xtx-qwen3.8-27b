@@ -133,6 +133,9 @@ public:
 
     bool get_can_shift() const override;
 
+    void     set_n_kv_reserve_cap(uint32_t cap) override { n_kv_reserve_cap = cap; }
+    uint32_t get_n_kv_reserve_cap() const { return n_kv_reserve_cap; }
+
     void clear(bool data) override;
 
     bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;
@@ -266,6 +269,9 @@ private:
 
     // required padding
     const uint32_t n_pad = 1;
+
+    // see llama_memory_i::set_n_kv_reserve_cap
+    uint32_t n_kv_reserve_cap = 0;
 
     // SWA
     const uint32_t n_swa = 0;

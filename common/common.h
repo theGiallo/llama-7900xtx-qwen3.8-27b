@@ -337,6 +337,7 @@ struct common_params_speculative_draft {
     llama_context * ctx_dft = nullptr;
 
     int32_t n_gpu_layers = -1; // number of layers to store in VRAM for the draft model (-1 - use default)
+    int32_t n_ctx        = 0;  // draft context size per sequence, 0 == same as the target (older positions are dropped)
 
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
@@ -448,6 +449,7 @@ struct ggml_opt_optimizer_params common_opt_lr_pars(void * userdata);
 struct common_params {
     int32_t n_predict             =    -1; // max. number of new tokens to predict, -1 == no limit
     int32_t n_ctx                 =     0; // context size, 0 == context the model was trained with
+    int32_t n_ctx_reserve         =     0; // cap of the KV span assumed when reserving compute buffers, 0 == full context
     int32_t n_batch               =  2048; // logical batch size for prompt processing (must be >=32 to use BLAS)
     int32_t n_ubatch              =   512; // physical batch size for prompt processing (must be >=32 to use BLAS)
     int32_t n_keep                =     0; // number of tokens to keep from initial prompt

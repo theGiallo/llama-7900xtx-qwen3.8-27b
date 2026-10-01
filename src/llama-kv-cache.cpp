@@ -2672,6 +2672,9 @@ llama_kv_cache_context::llama_kv_cache_context(llama_memory_status status) : sta
 llama_kv_cache_context::llama_kv_cache_context(
         llama_kv_cache * kv) : status(LLAMA_MEMORY_STATUS_SUCCESS), kv(kv) {
     n_kv = kv->get_size();
+    if (const uint32_t cap = kv->get_n_kv_reserve_cap(); cap > 0) {
+        n_kv = std::min<decltype(n_kv)>(n_kv, (decltype(n_kv)) GGML_PAD(cap, 256));
+    }
 
     const uint32_t n_stream = kv->get_n_stream();
 

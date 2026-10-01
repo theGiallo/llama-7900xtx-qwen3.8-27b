@@ -1546,6 +1546,23 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
             auto * mem_dft = llama_get_memory(ctx_dft);
 
+            // capped draft context (--spec-draft-ctx): keep a sliding window of the most recent positions in the draft KV
+            {
+                const int32_t n_ctx_dft_seq = (int32_t) llama_n_ctx_seq(ctx_dft);
+                if (n_ctx_dft_seq < (int32_t) llama_n_ctx_seq(ctx_tgt)) {
+                    for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
+                        if (i_batch_end[seq_id] < 0) {
+                            continue;
+                        }
+                        // leave room for this batch and the drafted tokens that follow it
+                        const llama_pos keep_from = batch_in.pos[i_batch_end[seq_id]] + 1 + 256 - n_ctx_dft_seq;
+                        if (keep_from > 0) {
+                            llama_memory_seq_rm(mem_dft, seq_id, 0, keep_from);
+                        }
+                    }
+                }
+            }
+
             bool ok = true;
             for (int head = 0; head < n_mtp_layers; ++head) {
                 if (chain_heads) {
@@ -2561,8 +2578,12 @@ common_speculative_init_result::common_speculative_init_result(
         cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
     }
 
-    // the draft context holds as many tokens per sequence as the target context
+    // the draft context holds as many tokens per sequence as the target context, unless --spec-draft-ctx caps it
     cparams.n_ctx = llama_n_ctx(ctx_tgt);
+    if (params.speculative.draft.n_ctx > 0) {
+        const uint32_t n_ctx_dft = (uint32_t) params.speculative.draft.n_ctx * std::max<uint32_t>(1, cparams.n_seq_max);
+        cparams.n_ctx = std::min<uint32_t>(cparams.n_ctx, n_ctx_dft);
+    }
 
     // note: for small models maybe we can set this to the maximum possible draft from all speculative types
     //       the extra memory for small models is likely negligible?

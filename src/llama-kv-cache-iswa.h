@@ -65,6 +65,8 @@ public:
 
     bool get_can_shift() const override;
 
+    void set_n_kv_reserve_cap(uint32_t cap) override { kv_base->set_n_kv_reserve_cap(cap); kv_swa->set_n_kv_reserve_cap(cap); }
+
     void clear(bool data) override;
 
     bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;

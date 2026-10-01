@@ -1644,6 +1644,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CTX_SIZE"));
     add_opt(common_arg(
+        {"--ctx-reserve"}, "N",
+        "cap (in KV cells) of the KV span assumed when reserving compute buffers (default: 0 = full context).\n"
+        "on long contexts the worst-case compute buffers (f16 K/V conversion workspace, mask) scale with the context; with N set they\n"
+        "are sized for N cells and grow on demand if a batch needs more",
+        [](common_params & params, int value) {
+            params.n_ctx_reserve = value;
+        }
+    ).set_env("LLAMA_ARG_CTX_RESERVE").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_COMPLETION}));
+    add_opt(common_arg(
         { "--kv-unified-per-slot" }, "N",
         "context limit per parallel slot (default: unset, behavior unchanged).\n"
         "when set without -c/--ctx-size, the shared KV pool is sized to n_parallel*N",
@@ -4082,6 +4091,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.speculative.draft.cpuparams_batch.poll = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+    add_opt(common_arg(
+        {"--spec-draft-ctx", "-cd", "--ctx-size-draft"}, "N",
+        "context size per sequence for the draft context (default: 0 = same as the target).\n"
+        "with a smaller value the draft KV keeps only the most recent positions (sliding window; MTP draft only)",
+        [](common_params & params, int value) {
+            params.speculative.draft.n_ctx = value;
+        }
+    ).set_env("LLAMA_ARG_SPEC_DRAFT_CTX").set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"--spec-draft-type-k", "-ctkd", "--cache-type-k-draft"}, "TYPE",
         string_format(

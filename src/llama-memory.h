@@ -93,6 +93,10 @@ struct llama_memory_i {
     // simulate full cache, used for allocating worst-case compute buffers
     virtual llama_memory_context_ptr init_full() = 0;
 
+    // cap the KV span (in cells) that init_full() simulates, so worst-case compute buffers are not sized for the whole slot
+    // 0 = no cap. default: ignored (memories without an attention KV cache)
+    virtual void set_n_kv_reserve_cap(uint32_t /*n_kv_cap*/) {}
+
     // prepare for any pending memory updates, such as shifts, copies, etc.
     // status == LLAMA_MEMORY_STATUS_NO_UPDATE if there is nothing to update
     virtual llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) = 0;
