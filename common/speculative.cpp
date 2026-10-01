@@ -1562,8 +1562,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 static const bool dft_sync = getenv("SPEC_DFT_SYNC") != nullptr;
                 static const bool dft_prof = getenv("SPEC_DFT_PROF") != nullptr;
                 const int64_t t_dft0 = dft_prof ? ggml_time_us() : 0;
-                const int32_t rc = llama_decode(ctx_dft, batch);
-                if (dft_sync || dft_prof) {
+                static const bool dft_skip = getenv("SPEC_DFT_SKIP") != nullptr;
+                const int32_t rc = dft_skip ? 0 : llama_decode(ctx_dft, batch);
+                if (!dft_skip && (dft_sync || dft_prof)) {
                     llama_synchronize(ctx_dft);
                 }
                 if (dft_prof) {
