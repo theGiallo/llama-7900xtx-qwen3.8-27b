@@ -1559,7 +1559,23 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     llama_set_nextn_layer_offset(ctx_dft, head);
                 }
 
+                static const bool dft_sync = getenv("SPEC_DFT_SYNC") != nullptr;
+                static const bool dft_prof = getenv("SPEC_DFT_PROF") != nullptr;
+                const int64_t t_dft0 = dft_prof ? ggml_time_us() : 0;
                 const int32_t rc = llama_decode(ctx_dft, batch);
+                if (dft_sync || dft_prof) {
+                    llama_synchronize(ctx_dft);
+                }
+                if (dft_prof) {
+                    static int n_calls = 0;
+                    static double t_sum = 0;
+                    static int64_t n_tok_sum = 0;
+                    t_sum += (ggml_time_us() - t_dft0) / 1000.0;
+                    n_tok_sum += batch.n_tokens;
+                    if (++n_calls % 4 == 0) {
+                        fprintf(stderr, "DFTPROF calls=%d avg_draft_decode_ms=%.1f avg_tokens=%.0f\n", n_calls, t_sum / n_calls, (double) n_tok_sum / n_calls);
+                    }
+                }
                 if (rc != 0) {
                     SPC_ERR("llama_decode(ctx_dft) head=%d failed rc=%d (pos=%d)\n",
                             head, (int) rc, (int) batch_in.pos[0]);

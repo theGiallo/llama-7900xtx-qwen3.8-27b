@@ -11341,6 +11341,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // bandwidth vs single-allocation size: ADD of two f32 vectors (buffer = 3 x n x 4 B). A cliff to ~PCIe speed would mean
+    // large device allocations land in host-visible memory.
+    for (int64_t mi : {16, 32, 64, 96, 128, 192, 256, 320, 384, 512}) {
+        test_cases.emplace_back(new test_bin_bcast(ggml_add, GGML_TYPE_F32, {mi * 1024 * 1024, 1, 1, 1}, {1, 1, 1, 1}));
+    }
+
     // DRAM-bound decode/verify mat-vec per quant type (Qwen3.8-27B FFN shapes). bs={8,1} gives 8 distinct
     // weight matrices per call (src1 has 8 channels, nr=1), so the working set (8 x 35-57 MB) exceeds the 96 MiB
     // Infinity Cache and the run measures DRAM, not MALL. Effective weight GB/s = 8*m*k*bpw/8 / time.
