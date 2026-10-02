@@ -11467,6 +11467,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 131072, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 131072, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
 
+    // Weight matmul scaling with the number of columns (speculative verify), batched 8x so the weights do not fit the Infinity Cache.
+    for (ggml_type type : {GGML_TYPE_Q4_K, GGML_TYPE_IQ4_XS, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_Q3_K, GGML_TYPE_IQ3_S, GGML_TYPE_Q8_0}) {
+        for (int64_t n : {1, 2, 3, 4, 5, 6, 8}) {
+            test_cases.emplace_back(new test_mul_mat(type, GGML_TYPE_F32, 17408, n, 5120, {8, 1}, {1, 1}));
+        }
+    }
+
     // GQA ratio sensitivity at a real fill (q4_0, 4 KV heads): how much does re-reading K/V per query-head group cost?
     for (int64_t gqa : {1, 2, 4, 8}) {
         for (int64_t nb : {1, 4}) {
