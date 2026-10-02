@@ -4442,7 +4442,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
             if (prof_on && !prof_idx.empty()) {
                 CUDA_CHECK(cudaEventRecord(g_op_prof.ev[prof_idx.size()], cuda_ctx->stream(cuda_ctx->device, 0)));
                 CUDA_CHECK(cudaEventSynchronize(g_op_prof.ev[prof_idx.size()]));
-                auto & sg = g_op_prof.sigs[cgraph->n_nodes];
+                int prof_cols = 0;
+                for (int q = 0; q < cgraph->n_nodes && !prof_cols; ++q) {
+                    if (cgraph->nodes[q]->op == GGML_OP_MUL_MAT) { prof_cols = (int) std::min<int64_t>(cgraph->nodes[q]->src[1]->ne[1], 999); }
+                }
+                auto & sg = g_op_prof.sigs[cgraph->n_nodes * 1000 + prof_cols];
                 for (size_t j = 0; j < prof_idx.size(); ++j) {
                     float ms = 0.0f;
                     CUDA_CHECK(cudaEventElapsedTime(&ms, g_op_prof.ev[j], g_op_prof.ev[j + 1]));
