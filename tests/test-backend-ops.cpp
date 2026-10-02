@@ -11467,6 +11467,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 131072, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 131072, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
 
+    // Repro scan for the lazy code-object load hang (ROCm/WSL2): first launch of each MMQ tile variant for Q6_K, ascending n.
+    for (int64_t n : {1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 24, 30, 32, 40, 48, 56, 64, 80, 96, 112, 128, 192, 256, 384, 478, 512}) {
+        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q6_K, GGML_TYPE_F32, 5120, n, 5120, {1, 1}, {1, 1}));
+    }
+
     // GQA ratio sensitivity at a real fill (q4_0, 4 KV heads): how much does re-reading K/V per query-head group cost?
     for (int64_t gqa : {1, 2, 4, 8}) {
         for (int64_t nb : {1, 4}) {
