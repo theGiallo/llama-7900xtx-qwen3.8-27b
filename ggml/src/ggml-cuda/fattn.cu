@@ -731,6 +731,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             if (vec_gqa) {
                 return BEST_FATTN_KERNEL_VEC_GQA;
             }
+            if (ggml_cuda_fattn_tile_q4_mode() >= 2 && ggml_cuda_fattn_tile_q4_fused(Q, K, V)) {
+                return BEST_FATTN_KERNEL_TILE;
+            }
             if (Q->ne[1] <= 2) {
                 return BEST_FATTN_KERNEL_VEC;
             }
@@ -760,6 +763,10 @@ static void ggml_cuda_fattn_need_f16(
         case BEST_FATTN_KERNEL_MMA_F16:
             need_f16_K = true;
             need_f16_V = true;
+            if (kernel == BEST_FATTN_KERNEL_TILE && ggml_cuda_fattn_tile_q4_fused(Q, K, V)) {
+                need_f16_K = false;
+                need_f16_V = false;
+            }
             break;
         case BEST_FATTN_KERNEL_VEC_GQA:
             need_f16_K = false;

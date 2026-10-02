@@ -39,7 +39,11 @@ void ggml_cuda_flash_attn_ext_tile(ggml_backend_cuda_context & ctx, ggml_tensor 
         } break;
         case 256: {
             GGML_ASSERT(V->ne[0] == K->ne[0]);
-            ggml_cuda_flash_attn_ext_tile_case<256, 256>(ctx, dst);
+            if (ggml_cuda_fattn_tile_q4_fused(dst->src[0], K, V)) {
+                ggml_cuda_flash_attn_ext_tile_case<256, 256, true>(ctx, dst);
+            } else {
+                ggml_cuda_flash_attn_ext_tile_case<256, 256>(ctx, dst);
+            }
         } break;
         case 320: {
             GGML_ASSERT(V->ne[0] == 256);
