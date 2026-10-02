@@ -698,8 +698,13 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
     // AMD WMMA is faster than the tile kernel if the wide tiles with high arithmetic intensity can be utilized.
+    // GGML_CUDA_FATTN_WMMA_MIN_ROWS=N (experiment): use the WMMA kernel from N query rows (cols * gqa_eff) up, default 9 / 17
+    static const int s_wmma_min_rows = [] {
+        const char * e = getenv("GGML_CUDA_FATTN_WMMA_MIN_ROWS");
+        return e ? atoi(e) : 0;
+    }();
     if ((amd_wmma_available(cc) && gqa_opt_applies && Q->ne[0] <= 256) && Q->ne[0] != 40 && Q->ne[0] != 72 &&
-            Q->ne[1] * gqa_ratio_eff > (Q->ne[0] <= 128 ? 8 : 16)) {
+            Q->ne[1] * gqa_ratio_eff > (s_wmma_min_rows > 0 ? s_wmma_min_rows - 1 : (Q->ne[0] <= 128 ? 8 : 16))) {
         return BEST_FATTN_KERNEL_MMA_F16;
     }
 
@@ -727,6 +732,15 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                 return BEST_FATTN_KERNEL_VEC_GQA;
             }
             if (Q->ne[1] <= 2) {
+                return BEST_FATTN_KERNEL_VEC;
+            }
+            // Opt-in (GGML_CUDA_FATTN_VEC_COLS4=1): 3..4 query columns (verify batches) on the vector kernel,
+            // which reads the quantized KV directly instead of converting the whole visible K/V to f16 first.
+            static const bool s_vec_cols4 = [] {
+                const char * e = getenv("GGML_CUDA_FATTN_VEC_COLS4");
+                return e != nullptr && atoi(e) != 0;
+            }();
+            if (s_vec_cols4 && Q->ne[1] <= 4) {
                 return BEST_FATTN_KERNEL_VEC;
             }
         }

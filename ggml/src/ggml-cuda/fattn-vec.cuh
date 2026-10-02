@@ -561,7 +561,20 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
         return;
     }
 
-    constexpr int cols_per_block = 2;
+    if (Q->ne[1] <= 2) {
+        constexpr int cols_per_block = 2;
+        if (logit_softcap == 0.0f) {
+            constexpr bool use_logit_softcap = false;
+            ggml_cuda_flash_attn_ext_vec_case_impl<D, cols_per_block, type_K, type_V, use_logit_softcap>(ctx, dst);
+        } else {
+            constexpr bool use_logit_softcap = true;
+            ggml_cuda_flash_attn_ext_vec_case_impl<D, cols_per_block, type_K, type_V, use_logit_softcap>(ctx, dst);
+        }
+        return;
+    }
+
+    // 3..4 columns (speculative verify batches): only reached with GGML_CUDA_FATTN_VEC_COLS4=1, see fattn.cu
+    constexpr int cols_per_block = 4;
     if (logit_softcap == 0.0f) {
         constexpr bool use_logit_softcap = false;
         ggml_cuda_flash_attn_ext_vec_case_impl<D, cols_per_block, type_K, type_V, use_logit_softcap>(ctx, dst);
