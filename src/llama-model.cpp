@@ -2843,6 +2843,16 @@ int32_t llama_model_n_layer(const llama_model * model) {
     return model->hparams.n_layer();
 }
 
+void llama_model_share_io(llama_model * dst, const llama_model * src) {
+    if (dst->tok_embd == nullptr) {
+        dst->tok_embd = src->tok_embd;
+    }
+    if (dst->output == nullptr) {
+        dst->output   = src->output ? src->output : src->tok_embd;
+        dst->output_s = src->output_s;
+    }
+}
+
 int32_t llama_model_n_layer_nextn(const llama_model * model) {
     return model->hparams.n_layer_nextn;
 }

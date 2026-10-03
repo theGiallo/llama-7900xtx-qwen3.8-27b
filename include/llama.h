@@ -607,6 +607,9 @@ extern "C" {
     LLAMA_API int32_t llama_model_n_embd_out   (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_layer      (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_layer_nextn(const struct llama_model * model);
+
+    // a head-only MTP model that was loaded without token_embd / output borrows them from the target model (must outlive dst)
+    LLAMA_API void llama_model_share_io(struct llama_model * dst, const struct llama_model * src);
     LLAMA_API int32_t llama_model_n_head       (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_head_kv    (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_swa        (const struct llama_model * model);
