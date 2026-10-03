@@ -11467,6 +11467,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 131072, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 131072, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
 
+    // Prefill attention (ubatch 512) at a real fill, per KV type: the matrix-core path, including the f16 conversion for quantized KV.
+    for (ggml_type type_KV : {GGML_TYPE_F16, GGML_TYPE_Q4_0}) {
+        for (int64_t kv : {65536, 113408}) {
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, 512, true, false, 0, 0, GGML_PREC_F32, type_KV, type_KV));
+        }
+    }
+
     // GQA ratio sensitivity at a real fill (q4_0, 4 KV heads): how much does re-reading K/V per query-head group cost?
     for (int64_t gqa : {1, 2, 4, 8}) {
         for (int64_t nb : {1, 4}) {
