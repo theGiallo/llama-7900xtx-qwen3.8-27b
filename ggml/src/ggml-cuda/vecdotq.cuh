@@ -1110,6 +1110,16 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
     return vec_dot_q6_K_q8_1_impl_mmvq(vl, vh, u, scales, bq6_K->d, d8);
 }
 
+// IQ3 sign application (prototype, see bench/sweep/patches/patch_iq3_signs.py)
+#ifndef IQ3_SIGNS_MODE
+#define IQ3_SIGNS_MODE 2
+#endif
+// 4 sign bits (bit i -> byte i) as 0x00 / 0xff byte masks
+static __device__ __forceinline__ int iq3_sign_mask4(const uint32_t b4) {
+    const uint32_t m = (b4 * 0x00204081u) & 0x01010101u;
+    return (int) ((m << 8) - m);
+}
+
 #define VDR_IQ2_XXS_Q8_1_MMVQ 2
 #define VDR_IQ2_XXS_Q8_1_MMQ  2
 
@@ -1126,14 +1136,20 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
 #pragma unroll
     for (int k0 = 0; k0 < 8; k0 += 2) {
         const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[k0/2]];
+#if IQ3_SIGNS_MODE == 2
+        const uint32_t sv = (aux32 >> (7 * k0 / 2)) & 0x7F;
+        const uint32_t sb = sv ^ ((__popc(sv) & 1) << 7);   // the 8th sign is the parity of the other seven
+        const int signs0 = iq3_sign_mask4(sb & 0x0F);
+        const int signs1 = iq3_sign_mask4(sb >> 4);
+#else
         const uint32_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
-
         const int signs0 = __vcmpne4(signs & 0x08040201, 0);
+        const int signs1 = __vcmpne4(signs & 0x80402010, 0);
+#endif
         const int grid0 = __vsub4(grid_pos.x ^ signs0, signs0);
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, k0 + 0);
         sumi = ggml_cuda_dp4a(grid0, u0, sumi);
 
-        const int signs1 = __vcmpne4(signs & 0x80402010, 0);
         const int grid1 = __vsub4(grid_pos.y ^ signs1, signs1);
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, k0 + 1);
         sumi = ggml_cuda_dp4a(grid1, u1, sumi);
@@ -1211,8 +1227,13 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int * grid_pos = (const int *)(iq2s_grid + (qs[l0/2] | ((qh << (8-l0)) & 0x300)));
 
+#if IQ3_SIGNS_MODE == 2
+        const int signs0 = iq3_sign_mask4(signs_packed_8[l0/2] & 0x0F);
+        const int signs1 = iq3_sign_mask4(signs_packed_8[l0/2] >> 4);
+#else
         const int signs0 = __vcmpne4(((signs_packed_8[l0/2] & 0x03) << 7) | ((signs_packed_8[l0/2] & 0x0C) << 21), 0x00000000);
         const int signs1 = __vcmpne4(((signs_packed_8[l0/2] & 0x30) << 3) | ((signs_packed_8[l0/2] & 0xC0) << 17), 0x00000000);
+#endif
 
         const int grid_l = __vsub4(grid_pos[0] ^ signs0, signs0);
         const int grid_h = __vsub4(grid_pos[1] ^ signs1, signs1);
@@ -1237,16 +1258,6 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
 #define VDR_IQ3_XXS_Q8_1_MMVQ 2
 #define VDR_IQ3_XXS_Q8_1_MMQ  2
 
-
-// IQ3 sign application (prototype, see bench/sweep/patches/patch_iq3_signs.py)
-#ifndef IQ3_SIGNS_MODE
-#define IQ3_SIGNS_MODE 2
-#endif
-// 4 sign bits (bit i -> byte i) as 0x00 / 0xff byte masks
-static __device__ __forceinline__ int iq3_sign_mask4(const uint32_t b4) {
-    const uint32_t m = (b4 * 0x00204081u) & 0x01010101u;
-    return (int) ((m << 8) - m);
-}
 
 static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
