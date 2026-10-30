@@ -1706,7 +1706,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                             continue;
                         }
                         // leave room for this batch and the drafted tokens that follow it
-                        const llama_pos keep_from = batch_in.pos[i_batch_end[seq_id]] + 1 + 256 - n_ctx_dft_seq;
+                        const llama_pos keep_from = batch_in.tokens[i_batch_end[seq_id]].pos[0] + 1 + 256 - n_ctx_dft_seq;
                         if (keep_from > 0) {
                             llama_memory_seq_rm(mem_dft, seq_id, 0, keep_from);
                         }

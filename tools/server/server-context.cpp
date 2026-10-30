@@ -4710,10 +4710,10 @@ private:
                 llama_synchronize(ctx_tgt);
             }
         });
-        if (g_sp_prof.enabled && batch_view.n_tokens <= 16 && g_sp_prof.drafted_this_round) {
+        if (g_sp_prof.enabled && batch.view.size() <= 16 && g_sp_prof.drafted_this_round) {
             const auto t_sd1 = std::chrono::steady_clock::now();
             g_sp_prof.t_decode += std::chrono::duration<double, std::milli>(t_sd1 - t_sd0).count();
-            g_sp_prof.n_tok    += batch_view.n_tokens;
+            g_sp_prof.n_tok    += batch.view.size();
             if (g_sp_prof.have_last) {
                 g_sp_prof.t_period += std::chrono::duration<double, std::milli>(t_sd0 - g_sp_prof.last_dec_end).count();
             }

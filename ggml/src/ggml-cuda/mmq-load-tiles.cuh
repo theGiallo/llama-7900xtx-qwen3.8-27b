@@ -1786,12 +1786,14 @@ template <ggml_type type, int J, bool fallback, ggml_prec prec_src1> static __de
 // scales (2 per block for Q4_0_ROCMFP4, 1 per block for Q4_0_ROCMFP4_FAST).
 // A thread handles a 64-value row (2 blocks) and writes the same tile layout
 // as NVFP4 (16 values per scale slot) so the generic vec_dot kernels work.
-template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_q4_0_rocmfp4(
-        const char * __restrict__ x, int * __restrict__ x_tile, const int kb0, const int i_max, const int stride) {
+template <ggml_type type, int J, bool fallback, ggml_prec prec_src1> static __device__ __forceinline__ void ggml_cuda_mmq_load_tiles_q4_0_rocmfp4(
+        const char * __restrict__ x, const char * __restrict__ x_gate, int * __restrict__ x_tile, const int kb0, const int i_max, const int stride) {
+    GGML_UNUSED(x_gate);   // no fused gate/up loader for this type (ggml_cuda_mmq_fusion_supported)
+
     constexpr int warp_size   = ggml_cuda_get_physical_warp_size();
-    constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
-    constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback);
-    constexpr int sram_stride = ggml_cuda_mmq_get_sram_stride(type, J, fallback);
+    constexpr int nwarps      = ggml_cuda_mmq_get_nthreads(type, J, fallback, prec_src1) / warp_size;
+    constexpr int I           = ggml_cuda_mmq_get_I(type, J, fallback, prec_src1);
+    constexpr int sram_stride = ggml_cuda_mmq_get_sram_stride(type, J, fallback, prec_src1);
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     int   * x_qs = (int   *) x_tile;

@@ -38,7 +38,7 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
     const int mtp_flags   = nf.mtp;
 
     // a head-only (MTP) file may leave out token_embd / output: the target model supplies them (llama_model_share_io)
-    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, mtp_only ? TENSOR_NOT_REQUIRED : 0);
+    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, trunk_flags);
 
     // output
     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd }, 0);
