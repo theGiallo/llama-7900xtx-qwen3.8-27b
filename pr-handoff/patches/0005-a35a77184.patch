@@ -1,0 +1,282 @@
+From a35a771843036825a8543f72cc9b20335a37cc0a Mon Sep 17 00:00:00 2001
+From: Gianluca Alloisio <giallodue@gmail.com>
+Date: Thu, 1 Oct 2026 11:22:48 +0200
+Subject: [PATCH] Add --ctx-reserve (cap the KV span used to reserve compute
+ buffers) and --spec-draft-ctx (smaller draft context with a sliding window)
+
+Both default to 0 = unchanged behaviour. --ctx-reserve: the worst-case compute buffer of a long-context slot (f16 K/V conversion
+workspace + mask) scales with n_ctx; with the cap it is sized for N cells and the scheduler grows it on demand.
+--spec-draft-ctx: the MTP draft context holds N positions per sequence and drops older ones before each draft prefill batch.
+---
+ common/arg.cpp                 | 17 +++++++++++++++++
+ common/common.cpp              |  1 +
+ common/common.h                |  2 ++
+ common/speculative.cpp         | 23 ++++++++++++++++++++++-
+ include/llama.h                |  3 +++
+ src/llama-context.cpp          |  5 +++++
+ src/llama-cparams.h            |  1 +
+ src/llama-kv-cache-iswa.h      |  2 ++
+ src/llama-kv-cache.cpp         |  3 +++
+ src/llama-kv-cache.h           |  6 ++++++
+ src/llama-memory-hybrid-iswa.h |  2 ++
+ src/llama-memory-hybrid.h      |  2 ++
+ src/llama-memory.h             |  4 ++++
+ 13 files changed, 70 insertions(+), 1 deletion(-)
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 63e342776..cf6fca8d8 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -1643,6 +1643,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             }
+         }
+     ).set_env("LLAMA_ARG_CTX_SIZE"));
++    add_opt(common_arg(
++        {"--ctx-reserve"}, "N",
++        "cap (in KV cells) of the KV span assumed when reserving compute buffers (default: 0 = full context).\n"
++        "on long contexts the worst-case compute buffers (f16 K/V conversion workspace, mask) scale with the context; with N set they\n"
++        "are sized for N cells and grow on demand if a batch needs more",
++        [](common_params & params, int value) {
++            params.n_ctx_reserve = value;
++        }
++    ).set_env("LLAMA_ARG_CTX_RESERVE").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_COMPLETION}));
+     add_opt(common_arg(
+         { "--kv-unified-per-slot" }, "N",
+         "context limit per parallel slot (default: unset, behavior unchanged).\n"
+@@ -4082,6 +4091,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.speculative.draft.cpuparams_batch.poll = value;
+         }
+     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
++    add_opt(common_arg(
++        {"--spec-draft-ctx", "-cd", "--ctx-size-draft"}, "N",
++        "context size per sequence for the draft context (default: 0 = same as the target).\n"
++        "with a smaller value the draft KV keeps only the most recent positions (sliding window; MTP draft only)",
++        [](common_params & params, int value) {
++            params.speculative.draft.n_ctx = value;
++        }
++    ).set_env("LLAMA_ARG_SPEC_DRAFT_CTX").set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+     add_opt(common_arg(
+         {"--spec-draft-type-k", "-ctkd", "--cache-type-k-draft"}, "TYPE",
+         string_format(
+diff --git a/common/common.cpp b/common/common.cpp
+index d8319cd9a..fd83af57c 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1721,6 +1721,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
+     cparams.n_ctx             = params.n_ctx;
+     cparams.n_seq_max         = params.n_parallel;
+     cparams.n_rs_seq          = params.speculative.need_n_rs_seq();
++    cparams.n_ctx_reserve     = std::max(params.n_ctx_reserve, 0);
+     cparams.n_outputs_max     = std::max(params.n_outputs_max, 0);
+     cparams.n_outputs_max_per_seq = std::max(params.n_outputs_max_per_seq, 0);
+     cparams.n_batch           = params.n_batch;
+diff --git a/common/common.h b/common/common.h
+index 7afc266ac..74d91252b 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -337,6 +337,7 @@ struct common_params_speculative_draft {
+     llama_context * ctx_dft = nullptr;
+ 
+     int32_t n_gpu_layers = -1; // number of layers to store in VRAM for the draft model (-1 - use default)
++    int32_t n_ctx        = 0;  // draft context size per sequence, 0 == same as the target (older positions are dropped)
+ 
+     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
+     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
+@@ -448,6 +449,7 @@ struct ggml_opt_optimizer_params common_opt_lr_pars(void * userdata);
+ struct common_params {
+     int32_t n_predict             =    -1; // max. number of new tokens to predict, -1 == no limit
+     int32_t n_ctx                 =     0; // context size, 0 == context the model was trained with
++    int32_t n_ctx_reserve         =     0; // cap of the KV span assumed when reserving compute buffers, 0 == full context
+     int32_t n_batch               =  2048; // logical batch size for prompt processing (must be >=32 to use BLAS)
+     int32_t n_ubatch              =   512; // physical batch size for prompt processing (must be >=32 to use BLAS)
+     int32_t n_keep                =     0; // number of tokens to keep from initial prompt
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 8a955c083..7091a5117 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -1546,6 +1546,23 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
+ 
+             auto * mem_dft = llama_get_memory(ctx_dft);
+ 
++            // capped draft context (--spec-draft-ctx): keep a sliding window of the most recent positions in the draft KV
++            {
++                const int32_t n_ctx_dft_seq = (int32_t) llama_n_ctx_seq(ctx_dft);
++                if (n_ctx_dft_seq < (int32_t) llama_n_ctx_seq(ctx_tgt)) {
++                    for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
++                        if (i_batch_end[seq_id] < 0) {
++                            continue;
++                        }
++                        // leave room for this batch and the drafted tokens that follow it
++                        const llama_pos keep_from = batch_in.pos[i_batch_end[seq_id]] + 1 + 256 - n_ctx_dft_seq;
++                        if (keep_from > 0) {
++                            llama_memory_seq_rm(mem_dft, seq_id, 0, keep_from);
++                        }
++                    }
++                }
++            }
++
+             bool ok = true;
+             for (int head = 0; head < n_mtp_layers; ++head) {
+                 if (chain_heads) {
+@@ -2561,8 +2578,12 @@ common_speculative_init_result::common_speculative_init_result(
+         cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+     }
+ 
+-    // the draft context holds as many tokens per sequence as the target context
++    // the draft context holds as many tokens per sequence as the target context, unless --spec-draft-ctx caps it
+     cparams.n_ctx = llama_n_ctx(ctx_tgt);
++    if (params.speculative.draft.n_ctx > 0) {
++        const uint32_t n_ctx_dft = (uint32_t) params.speculative.draft.n_ctx * std::max<uint32_t>(1, cparams.n_seq_max);
++        cparams.n_ctx = std::min<uint32_t>(cparams.n_ctx, n_ctx_dft);
++    }
+ 
+     // note: for small models maybe we can set this to the maximum possible draft from all speculative types
+     //       the extra memory for small models is likely negligible?
+diff --git a/include/llama.h b/include/llama.h
+index 8c0a6de1c..325e43d39 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -373,6 +373,9 @@ extern "C" {
+         uint32_t n_ubatch;              // physical maximum batch size
+         uint32_t n_seq_max;             // max number of sequences (i.e. distinct states for recurrent models)
+         uint32_t n_rs_seq;              // number of recurrent-state snapshots per seq for rollback (0 = no rollback) [EXPERIMENTAL]
++        uint32_t n_ctx_reserve;         // cap (in KV cells) of the KV span assumed when reserving compute buffers (0 = full context).
++                                        // Smaller values shrink the compute buffers of long-context setups; if a batch needs a
++                                        // longer span the scheduler grows the buffers on demand
+         uint32_t n_outputs_max;         // max outputs in a ubatch (0 = n_batch)
+         uint32_t n_outputs_max_per_seq; // max outputs per sequence (0 = n_outputs_max)
+         int32_t  n_threads;             // number of threads to use for generation
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 7623d4d1d..e8e39080d 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -109,6 +109,7 @@ llama_context::llama_context(
+         cparams.n_rs_seq = 0;
+     }
+ 
++    cparams.n_ctx_reserve           = params.n_ctx_reserve;
+     cparams.n_threads               = params.n_threads;
+     cparams.n_threads_batch         = params.n_threads_batch;
+     cparams.yarn_ext_factor         = params.yarn_ext_factor  >= 0.0f ? params.yarn_ext_factor  : hparams.yarn_ext_factor;
+@@ -394,6 +395,9 @@ llama_context::llama_context(
+         };
+ 
+         memory.reset(model.create_memory(params_mem, cparams));
++        if (memory && cparams.n_ctx_reserve > 0) {
++            memory->set_n_kv_reserve_cap(cparams.n_ctx_reserve);
++        }
+     }
+ 
+     // init backends
+@@ -3699,6 +3703,7 @@ llama_context_params llama_context_default_params() {
+         /*.n_ubatch                    =*/ 512,
+         /*.n_seq_max                   =*/ 1,
+         /*.n_rs_seq                    =*/ 0,
++        /*.n_ctx_reserve               =*/ 0,
+         /*.n_outputs_max               =*/ 0,
+         /*.n_outputs_max_per_seq       =*/ 1,
+         /*.n_threads                   =*/ GGML_DEFAULT_N_THREADS, // TODO: better default
+diff --git a/src/llama-cparams.h b/src/llama-cparams.h
+index b592de18c..0378f6344 100644
+--- a/src/llama-cparams.h
++++ b/src/llama-cparams.h
+@@ -14,6 +14,7 @@ struct llama_cparams {
+     uint32_t n_ubatch;
+     uint32_t n_seq_max;
+     uint32_t n_rs_seq;        // number of recurrent-state snapshots per seq for rollback
++    uint32_t n_ctx_reserve;   // cap of the KV span used when reserving compute buffers (0 = full)
+     uint32_t n_outputs_max;   // max outputs supported by the context
+     uint32_t n_outputs_max_per_seq;
+     int32_t  n_threads;       // number of threads to use for generation
+diff --git a/src/llama-kv-cache-iswa.h b/src/llama-kv-cache-iswa.h
+index 7dab6eaa8..939e6aae3 100644
+--- a/src/llama-kv-cache-iswa.h
++++ b/src/llama-kv-cache-iswa.h
+@@ -65,6 +65,8 @@ public:
+ 
+     bool get_can_shift() const override;
+ 
++    void set_n_kv_reserve_cap(uint32_t cap) override { kv_base->set_n_kv_reserve_cap(cap); kv_swa->set_n_kv_reserve_cap(cap); }
++
+     void clear(bool data) override;
+ 
+     bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 332d1abe0..d3adb9424 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -2672,6 +2672,9 @@ llama_kv_cache_context::llama_kv_cache_context(llama_memory_status status) : sta
+ llama_kv_cache_context::llama_kv_cache_context(
+         llama_kv_cache * kv) : status(LLAMA_MEMORY_STATUS_SUCCESS), kv(kv) {
+     n_kv = kv->get_size();
++    if (const uint32_t cap = kv->get_n_kv_reserve_cap(); cap > 0) {
++        n_kv = std::min<decltype(n_kv)>(n_kv, (decltype(n_kv)) GGML_PAD(cap, 256));
++    }
+ 
+     const uint32_t n_stream = kv->get_n_stream();
+ 
+diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
+index c4d8699de..ee9ec12ac 100644
+--- a/src/llama-kv-cache.h
++++ b/src/llama-kv-cache.h
+@@ -133,6 +133,9 @@ public:
+ 
+     bool get_can_shift() const override;
+ 
++    void     set_n_kv_reserve_cap(uint32_t cap) override { n_kv_reserve_cap = cap; }
++    uint32_t get_n_kv_reserve_cap() const { return n_kv_reserve_cap; }
++
+     void clear(bool data) override;
+ 
+     bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;
+@@ -267,6 +270,9 @@ private:
+     // required padding
+     const uint32_t n_pad = 1;
+ 
++    // see llama_memory_i::set_n_kv_reserve_cap
++    uint32_t n_kv_reserve_cap = 0;
++
+     // SWA
+     const uint32_t n_swa = 0;
+ 
+diff --git a/src/llama-memory-hybrid-iswa.h b/src/llama-memory-hybrid-iswa.h
+index c9d3f9f57..f5b4ead1e 100644
+--- a/src/llama-memory-hybrid-iswa.h
++++ b/src/llama-memory-hybrid-iswa.h
+@@ -58,6 +58,8 @@ public:
+ 
+     bool get_can_shift() const override;
+ 
++    void set_n_kv_reserve_cap(uint32_t cap) override { mem_attn->set_n_kv_reserve_cap(cap); }
++
+     void clear(bool data) override;
+ 
+     bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;
+diff --git a/src/llama-memory-hybrid.h b/src/llama-memory-hybrid.h
+index 484eafb74..84f50adab 100644
+--- a/src/llama-memory-hybrid.h
++++ b/src/llama-memory-hybrid.h
+@@ -58,6 +58,8 @@ public:
+ 
+     bool get_can_shift() const override;
+ 
++    void set_n_kv_reserve_cap(uint32_t cap) override { mem_attn->set_n_kv_reserve_cap(cap); }
++
+     void clear(bool data) override;
+ 
+     bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;
+diff --git a/src/llama-memory.h b/src/llama-memory.h
+index db8253966..9cb0f3dd9 100644
+--- a/src/llama-memory.h
++++ b/src/llama-memory.h
+@@ -93,6 +93,10 @@ struct llama_memory_i {
+     // simulate full cache, used for allocating worst-case compute buffers
+     virtual llama_memory_context_ptr init_full() = 0;
+ 
++    // cap the KV span (in cells) that init_full() simulates, so worst-case compute buffers are not sized for the whole slot
++    // 0 = no cap. default: ignored (memories without an attention KV cache)
++    virtual void set_n_kv_reserve_cap(uint32_t /*n_kv_cap*/) {}
++
+     // prepare for any pending memory updates, such as shifts, copies, etc.
+     // status == LLAMA_MEMORY_STATUS_NO_UPDATE if there is nothing to update
+     virtual llama_memory_context_ptr init_update(llama_context * lctx, bool optimize) = 0;

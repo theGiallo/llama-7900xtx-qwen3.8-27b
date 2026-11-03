@@ -1,0 +1,85 @@
+From 484a3c9aa473020c77594b3ed56e2725bafbe4ca Mon Sep 17 00:00:00 2001
+From: Gianluca Alloisio <giallodue@gmail.com>
+Date: Sat, 3 Oct 2026 16:38:36 +0200
+Subject: [PATCH] MTP head without token_embd/output: borrow them from the
+ target (llama_model_share_io)
+
+---
+ common/speculative.cpp |  4 ++++
+ include/llama.h        |  3 +++
+ src/llama-model.cpp    | 10 ++++++++++
+ src/models/qwen35.cpp  |  5 +++--
+ 4 files changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 7091a5117..73a5d3c00 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -2603,6 +2603,10 @@ common_speculative_init_result::common_speculative_init_result(
+ 
+         pimpl->model.reset(model_dft);
+ 
++        if (spec_mtp) {
++            llama_model_share_io(model_dft, model_tgt); // no-op unless the head file has no token_embd / output
++        }
++
+         llama_context * ctx_dft = llama_init_from_model(model_dft, cparams);
+         if (ctx_dft == nullptr) {
+             LOG_ERR("%s: failed to create MTP context\n", __func__);
+diff --git a/include/llama.h b/include/llama.h
+index 325e43d39..33b305bf1 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -607,6 +607,9 @@ extern "C" {
+     LLAMA_API int32_t llama_model_n_embd_out   (const struct llama_model * model);
+     LLAMA_API int32_t llama_model_n_layer      (const struct llama_model * model);
+     LLAMA_API int32_t llama_model_n_layer_nextn(const struct llama_model * model);
++
++    // a head-only MTP model that was loaded without token_embd / output borrows them from the target model (must outlive dst)
++    LLAMA_API void llama_model_share_io(struct llama_model * dst, const struct llama_model * src);
+     LLAMA_API int32_t llama_model_n_head       (const struct llama_model * model);
+     LLAMA_API int32_t llama_model_n_head_kv    (const struct llama_model * model);
+     LLAMA_API int32_t llama_model_n_swa        (const struct llama_model * model);
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 74a2cffa6..14b483267 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -2843,6 +2843,16 @@ int32_t llama_model_n_layer(const llama_model * model) {
+     return model->hparams.n_layer();
+ }
+ 
++void llama_model_share_io(llama_model * dst, const llama_model * src) {
++    if (dst->tok_embd == nullptr) {
++        dst->tok_embd = src->tok_embd;
++    }
++    if (dst->output == nullptr) {
++        dst->output   = src->output ? src->output : src->tok_embd;
++        dst->output_s = src->output_s;
++    }
++}
++
+ int32_t llama_model_n_layer_nextn(const llama_model * model) {
+     return model->hparams.n_layer_nextn;
+ }
+diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
+index a1e263500..5acc762bc 100644
+--- a/src/models/qwen35.cpp
++++ b/src/models/qwen35.cpp
+@@ -37,14 +37,15 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
+     const int trunk_flags = mtp_only ? TENSOR_NOT_REQUIRED : 0;
+     int mtp_flags = !ml.load_mtp ? TENSOR_SKIP : 0;
+ 
+-    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
++    // a head-only (MTP) file may leave out token_embd / output: the target model supplies them (llama_model_share_io)
++    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, mtp_only ? TENSOR_NOT_REQUIRED : 0);
+ 
+     // output
+     output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), { n_embd }, 0);
+     output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED);
+ 
+     // if output is NULL, init from the input tok embed
+-    if (output == NULL) {
++    if (output == NULL && tok_embd != NULL) {
+         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
+     }
+ 

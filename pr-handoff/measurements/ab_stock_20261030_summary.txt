@@ -1,0 +1,69 @@
+=== STOCK1 (mtp)  /home/thegiallo/llama-stock/build-stock/bin  fused=none  20:07:11
+version: 0.8.0-dev (build 12003, commit 36a0e2ffc)
+STOCK1 mtp pass1 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 952.53, "pred_n": 256, "tg": 84.81, "wall": 15.1} 
+STOCK1 mtp pass1 pi32 SHA fa9ed1117ea6 RESULT {"pn": 27688, "pp": 925.72, "pred_n": 256, "tg": 68.95, "wall": 33.7} 
+STOCK1 mtp pass1 pi113 SHA 0f410ff5a253 RESULT {"pn": 111217, "pp": 659.45, "pred_n": 256, "tg": 46.67, "wall": 174.3} 
+STOCK1 mtp pass2 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 956.42, "pred_n": 256, "tg": 85.36, "wall": 23.6} 
+STOCK1 mtp pass2 pi32 SHA fa9ed1117ea6 RESULT {"pn": 27688, "pp": 927.0, "pred_n": 256, "tg": 68.0, "wall": 33.7} 
+STOCK1 mtp pass2 pi113 SHA 8a67dfd65d69 RESULT {"pn": 111217, "pp": 657.54, "pred_n": 256, "tg": 45.73, "wall": 174.9} 
+9.03.511.302 I slot print_timing: id  0 | task 497 | draft acceptance = 0.75214 (  176 accepted /   234 generated), mean len =  3.26
+=== OURS0 (mtp)  /home/thegiallo/llama-up/build-up/bin  fused=0  20:16:16
+version: 0.8.0-dev (build 12075, commit 5b0c0af3b)
+OURS0 mtp pass1 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 948.4, "pred_n": 256, "tg": 85.18, "wall": 15.2} 
+OURS0 mtp pass1 pi32 SHA fa9ed1117ea6 RESULT {"pn": 27688, "pp": 923.66, "pred_n": 256, "tg": 67.87, "wall": 33.8} 
+OURS0 mtp pass1 pi113 SHA 0f410ff5a253 RESULT {"pn": 111217, "pp": 656.89, "pred_n": 256, "tg": 46.9, "wall": 174.9} 
+OURS0 mtp pass2 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 945.19, "pred_n": 256, "tg": 84.77, "wall": 17.1} 
+OURS0 mtp pass2 pi32 SHA fa9ed1117ea6 RESULT {"pn": 27688, "pp": 918.21, "pred_n": 256, "tg": 68.01, "wall": 33.9} 
+OURS0 mtp pass2 pi113 SHA 8a67dfd65d69 RESULT {"pn": 111217, "pp": 657.94, "pred_n": 256, "tg": 46.27, "wall": 174.7} 
+7.48.783.610 I slot print_timing: id  0 | task 497 | draft acceptance = 0.75214 (  176 accepted /   234 generated), mean len =  3.26
+=== OURS2 (mtp)  /home/thegiallo/llama-up/build-up/bin  fused=2  20:24:06
+version: 0.8.0-dev (build 12075, commit 5b0c0af3b)
+OURS2 mtp pass1 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 956.23, "pred_n": 256, "tg": 86.41, "wall": 15.0} 
+OURS2 mtp pass1 pi32 SHA 00c861e1a152 RESULT {"pn": 27688, "pp": 919.98, "pred_n": 256, "tg": 69.1, "wall": 33.8} 
+OURS2 mtp pass1 pi113 SHA ccc1a8ec1f2e RESULT {"pn": 111217, "pp": 660.02, "pred_n": 256, "tg": 52.66, "wall": 173.5} 
+OURS2 mtp pass2 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 970.76, "pred_n": 256, "tg": 84.94, "wall": 16.7} 
+OURS2 mtp pass2 pi32 SHA 00c861e1a152 RESULT {"pn": 27688, "pp": 917.36, "pred_n": 256, "tg": 68.58, "wall": 33.9} 
+OURS2 mtp pass2 pi113 SHA 76855147f575 RESULT {"pn": 111217, "pp": 657.1, "pred_n": 256, "tg": 51.32, "wall": 174.4} 
+7.46.602.156 I slot print_timing: id  0 | task 497 | draft acceptance = 0.76293 (  177 accepted /   232 generated), mean len =  3.27
+=== STOCK2 (mtp)  /home/thegiallo/llama-stock/build-stock/bin  fused=none  20:31:54
+version: 0.8.0-dev (build 12003, commit 36a0e2ffc)
+STOCK2 mtp pass1 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 954.87, "pred_n": 256, "tg": 85.96, "wall": 15.1} 
+STOCK2 mtp pass1 pi32 SHA fa9ed1117ea6 RESULT {"pn": 27688, "pp": 919.51, "pred_n": 256, "tg": 68.23, "wall": 33.9} 
+STOCK2 mtp pass1 pi113 SHA 0f410ff5a253 RESULT {"pn": 111217, "pp": 657.73, "pred_n": 256, "tg": 46.67, "wall": 174.7} 
+STOCK2 mtp pass2 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 967.0, "pred_n": 256, "tg": 85.21, "wall": 16.8} 
+STOCK2 mtp pass2 pi32 SHA fa9ed1117ea6 RESULT {"pn": 27688, "pp": 913.06, "pred_n": 256, "tg": 68.95, "wall": 34.1} 
+STOCK2 mtp pass2 pi113 SHA 8a67dfd65d69 RESULT {"pn": 111217, "pp": 658.5, "pred_n": 256, "tg": 46.15, "wall": 174.6} 
+7.48.188.930 I slot print_timing: id  0 | task 497 | draft acceptance = 0.75214 (  176 accepted /   234 generated), mean len =  3.26
+=== STOCK1 (none)  /home/thegiallo/llama-stock/build-stock/bin  fused=none  20:39:43
+version: 0.8.0-dev (build 12003, commit 36a0e2ffc)
+STOCK1 none pass1 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 1035.82, "pred_n": 256, "tg": 36.43, "wall": 18.2} 
+STOCK1 none pass1 pi32 SHA b654de8aa5e5 RESULT {"pn": 27688, "pp": 960.73, "pred_n": 256, "tg": 33.96, "wall": 36.4} 
+STOCK1 none pass1 pi113 SHA aa8931255663 RESULT {"pn": 111217, "pp": 694.83, "pred_n": 256, "tg": 25.01, "wall": 170.4} 
+STOCK1 none pass2 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 1032.87, "pred_n": 256, "tg": 36.26, "wall": 19.7} 
+STOCK1 none pass2 pi32 SHA b654de8aa5e5 RESULT {"pn": 27688, "pp": 968.43, "pred_n": 256, "tg": 33.9, "wall": 36.2} 
+STOCK1 none pass2 pi113 SHA 5cded64ebc71 RESULT {"pn": 111217, "pp": 694.67, "pred_n": 256, "tg": 24.87, "wall": 170.5} 
+=== OURS0 (none)  /home/thegiallo/llama-up/build-up/bin  fused=0  20:47:33
+version: 0.8.0-dev (build 12075, commit 5b0c0af3b)
+OURS0 none pass1 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 1041.44, "pred_n": 256, "tg": 36.24, "wall": 18.2} 
+OURS0 none pass1 pi32 SHA b654de8aa5e5 RESULT {"pn": 27688, "pp": 971.39, "pred_n": 256, "tg": 34.13, "wall": 36.0} 
+OURS0 none pass1 pi113 SHA aa8931255663 RESULT {"pn": 111217, "pp": 693.33, "pred_n": 256, "tg": 24.97, "wall": 170.8} 
+OURS0 none pass2 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 1027.81, "pred_n": 256, "tg": 36.03, "wall": 19.8} 
+OURS0 none pass2 pi32 SHA b654de8aa5e5 RESULT {"pn": 27688, "pp": 971.21, "pred_n": 256, "tg": 33.9, "wall": 36.1} 
+OURS0 none pass2 pi113 SHA 5cded64ebc71 RESULT {"pn": 111217, "pp": 692.33, "pred_n": 256, "tg": 24.95, "wall": 171.0} 
+=== OURS2 (none)  /home/thegiallo/llama-up/build-up/bin  fused=2  20:55:23
+version: 0.8.0-dev (build 12075, commit 5b0c0af3b)
+OURS2 none pass1 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 1036.9, "pred_n": 256, "tg": 36.91, "wall": 18.1} 
+OURS2 none pass1 pi32 SHA bb8cc8221a60 RESULT {"pn": 27688, "pp": 966.4, "pred_n": 256, "tg": 35.14, "wall": 36.0} 
+OURS2 none pass1 pi113 SHA 137b2a6af66e RESULT {"pn": 111217, "pp": 694.88, "pred_n": 256, "tg": 27.51, "wall": 169.5} 
+OURS2 none pass2 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 1040.87, "pred_n": 256, "tg": 36.88, "wall": 19.5} 
+OURS2 none pass2 pi32 SHA bb8cc8221a60 RESULT {"pn": 27688, "pp": 965.32, "pred_n": 256, "tg": 35.18, "wall": 36.0} 
+OURS2 none pass2 pi113 SHA 375d56a4bb02 RESULT {"pn": 111217, "pp": 692.83, "pred_n": 256, "tg": 27.53, "wall": 169.9} 
+=== STOCK2 (none)  /home/thegiallo/llama-stock/build-stock/bin  fused=none  21:03:10
+version: 0.8.0-dev (build 12003, commit 36a0e2ffc)
+STOCK2 none pass1 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 1049.3, "pred_n": 256, "tg": 36.38, "wall": 18.0} 
+STOCK2 none pass1 pi32 SHA b654de8aa5e5 RESULT {"pn": 27688, "pp": 963.48, "pred_n": 256, "tg": 33.93, "wall": 36.3} 
+STOCK2 none pass1 pi113 SHA aa8931255663 RESULT {"pn": 111217, "pp": 694.7, "pred_n": 256, "tg": 24.95, "wall": 170.5} 
+STOCK2 none pass2 pi16 SHA ca02b7cbbe51 RESULT {"pn": 11376, "pp": 1035.01, "pred_n": 256, "tg": 36.24, "wall": 19.7} 
+STOCK2 none pass2 pi32 SHA b654de8aa5e5 RESULT {"pn": 27688, "pp": 968.84, "pred_n": 256, "tg": 33.85, "wall": 36.2} 
+STOCK2 none pass2 pi113 SHA 5cded64ebc71 RESULT {"pn": 111217, "pp": 695.76, "pred_n": 256, "tg": 25.0, "wall": 170.2} 
+=== done 21:10:58

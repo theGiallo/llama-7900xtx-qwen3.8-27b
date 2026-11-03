@@ -1,0 +1,43 @@
+From 8a4f661e94d3768a986254296f4655c3e08f101c Mon Sep 17 00:00:00 2001
+From: Gianluca Alloisio <giallodue@gmail.com>
+Date: Wed, 30 Sep 2026 18:55:59 +0200
+Subject: [PATCH] ggml-cuda: keep one CUDA graph per small batch size
+
+Speculative verify batches change size from round to round. The graph cache
+was keyed by the first node only, so every size change reset the warmup and
+the round ran eagerly: on Qwen3.8-27B (4470-node verify graph with recurrent
+snapshots) ~80% of verify passes never replayed a graph.
+
+Key small batches (2..16 tokens) by (first node, n_tokens). Output is
+bit-identical (same text hash in every run). UD-Q3_K_XL + DFlash2, q4_0 KV,
+-c 131072, 512 tokens, greedy: 6k fill 55.5-56.3 -> 62.8-63.0 t/s,
+27.5k fill 50.1-50.6 -> 58.9 t/s.
+GGML_CUDA_GRAPH_KEY_BY_BATCH=0 restores the old key.
+---
+ ggml/src/ggml-cuda/ggml-cuda.cu | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 9090d38d1..137d9d728 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -2593,7 +2593,18 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
+ }
+ 
+ static const void * ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
+-    return cgraph->nodes[0];
++    // One graph slot per (first node, small batch size). Speculative verify batches change size from round to
++    // round; with a single slot every size change resets the warmup and the round runs eagerly (~4500 launches
++    // for the 27B hybrid verify graph), so most verify passes never replayed a graph. Large batches (prefill)
++    // and batch 1 keep the original key. The key is only used as a map key, never dereferenced.
++    // GGML_CUDA_GRAPH_KEY_BY_BATCH=0 restores the old behaviour (A/B).
++    static const bool by_batch = getenv("GGML_CUDA_GRAPH_KEY_BY_BATCH") == nullptr || atoi(getenv("GGML_CUDA_GRAPH_KEY_BY_BATCH")) != 0;
++    const ggml_tensor * n0 = cgraph->nodes[0];
++    const int64_t n_tok = n0->ne[1];
++    if (by_batch && n_tok > 1 && n_tok <= 16) {
++        return (const void *) ((uintptr_t) n0 ^ ((uintptr_t) n_tok << 56));
++    }
++    return n0;
+ }
+ 
+ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph) {

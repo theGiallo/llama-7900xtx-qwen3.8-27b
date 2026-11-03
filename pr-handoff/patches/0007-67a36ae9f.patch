@@ -1,0 +1,28 @@
+From 67a36ae9f924f7e1e7b311869b68a9a50929630e Mon Sep 17 00:00:00 2001
+From: Gianluca Alloisio <giallodue@gmail.com>
+Date: Sat, 3 Oct 2026 06:50:05 +0200
+Subject: [PATCH] tests: perf cases for prefill attention (ubatch 512) at 65536
+ / 113408, f16 and q4_0
+
+---
+ tests/test-backend-ops.cpp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index 23086233b..8c8a1ae14 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -11467,6 +11467,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
+     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 131072, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 131072, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+ 
++    // Prefill attention (ubatch 512) at a real fill, per KV type: the matrix-core path, including the f16 conversion for quantized KV.
++    for (ggml_type type_KV : {GGML_TYPE_F16, GGML_TYPE_Q4_0}) {
++        for (int64_t kv : {65536, 113408}) {
++            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, 512, true, false, 0, 0, GGML_PREC_F32, type_KV, type_KV));
++        }
++    }
++
+     // GQA ratio sensitivity at a real fill (q4_0, 4 KV heads): how much does re-reading K/V per query-head group cost?
+     for (int64_t gqa : {1, 2, 4, 8}) {
+         for (int64_t nb : {1, 4}) {
