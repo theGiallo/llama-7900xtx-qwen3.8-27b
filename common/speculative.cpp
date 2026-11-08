@@ -1580,6 +1580,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         is_mem_shared = llama_get_ctx_other(ctx_dft) == ctx_tgt;
         chain_heads   = n_mtp_layers > 1 && !is_mem_shared;
 
+        // 2026-11-08: SPEC_MTP_NMAX caps only the MTP drafter (each MTP step costs ~2.4 ms), so the n-gram drafter can use a longer --spec-draft-n-max for copy-heavy text
+        if (const char * e = getenv("SPEC_MTP_NMAX")) {
+            this->params.n_max = std::min(this->params.n_max, std::max(1, atoi(e)));
+        }
+
         if (chain_heads) {
             this->params.n_max = std::min(this->params.n_max, n_mtp_layers);
 
@@ -1739,12 +1744,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     static int n_calls = 0;
                     static double t_sum = 0;
                     static int64_t n_tok_sum = 0;
+                    if (batch.size() > 4) { goto dft_prof_skip; }
                     t_sum += (ggml_time_us() - t_dft0) / 1000.0;
                     n_tok_sum += batch.size();
                     if (++n_calls % 4 == 0) {
                         fprintf(stderr, "DFTPROF calls=%d avg_draft_decode_ms=%.1f avg_tokens=%.0f\n", n_calls, t_sum / n_calls, (double) n_tok_sum / n_calls);
                     }
                 }
+                dft_prof_skip:;
                 if (rc != 0) {
                     SPC_ERR("llama_process(ctx_dft) head=%d failed rc=%d (pos=%d)\n",
                             head, (int) rc, (int) batch_in.tokens[0].pos[0]);
@@ -1844,6 +1851,9 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 llama_set_nextn_layer_offset(ctx_dft, i);
             }
 
+            static const bool dprof = getenv("SPEC_DFT_PROF") != nullptr;
+            static double t_proc = 0, t_samp = 0; static long n_st = 0;
+            const int64_t tp0 = dprof ? ggml_time_us() : 0;
             int ret = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch.get());
             if (ret != 0) {
                 SPC_ERR("llama_process[%d] returned %d\n", i, ret);
@@ -1862,6 +1872,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
                 auto * smpl = smpls[seq_id].get();
 
+                const int64_t ts0 = dprof ? ggml_time_us() : 0;
                 const llama_token id_sampled = common_sampler_sample(smpl, ctx_dft, i_last[seq_id], true);
                 const float * h_row = llama_get_embeddings_nextn_ith(ctx_dft, i_last[seq_id]);
 
@@ -1873,6 +1884,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                             common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
                 }
 
+                if (dprof) { t_proc += (ts0 - tp0) / 1000.0; t_samp += (ggml_time_us() - ts0) / 1000.0; if (++n_st % 64 == 0) fprintf(stderr, "DRAFTSTEP steps=%ld avg_process_ms=%.2f avg_sample_ms=%.2f\n", n_st, t_proc / n_st, t_samp / n_st); }
                 // add drafted token for each sequence
                 const llama_token id = dparams.at(seq_id).result_q ? id_sampled : cur_p->data[0].id;
 
