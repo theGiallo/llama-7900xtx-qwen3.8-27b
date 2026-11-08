@@ -71,7 +71,7 @@ static __global__ void flash_attn_dec_q(
     constexpr int bytes_Qi = RT*NBLK*8*4;
     constexpr int bytes_Qd = RT*NBLK*8;
     constexpr int bytes_Ps = 4*NB*32*R*2;
-    constexpr int bytes_ep = 4*R*D*4;
+    constexpr int bytes_ep = 4*D*4;                    // epilogue: one query row at a time
     constexpr int bytes_all = (bytes_Qi + bytes_Qd + bytes_Ps) > bytes_ep ? (bytes_Qi + bytes_Qd + bytes_Ps) : bytes_ep;
     __shared__ __align__(16) char smem[bytes_all];
     __shared__ float  Mw[4*NB][R];
@@ -301,10 +301,10 @@ static __global__ void flash_attn_dec_q(
 
 #pragma unroll
     for (int cc = 0; cc < NB; ++cc) {
-        if (cg == cc) {
 #pragma unroll
-            for (int g = 0; g < G; ++g) {
-                float * dstp = sm + (wg*G + g)*D + dbase;
+        for (int g = 0; g < G; ++g) {
+            if (cg == cc) {
+                float * dstp = sm + wg*D + dbase;
 #pragma unroll
                 for (int h = 0; h < HPL; ++h) {
                     const float2 f = __half22float2(acc[g][h]);
@@ -312,25 +312,24 @@ static __global__ void flash_attn_dec_q(
                     dstp[2*h + 1] = f.y*fw[g];
                 }
             }
-        }
-        __syncthreads();
-        for (int idx = tid; idx < G*D; idx += NT) {
-            const int g = idx / D, d = idx - g*D;
-            const float v = sm[(0*G + g)*D + d] + sm[(1*G + g)*D + d] + sm[(2*G + g)*D + d] + sm[(3*G + g)*D + d];
-            const float gmax = fmaxf(fmaxf(Mw[cc*4][g], Mw[cc*4 + 1][g]), fmaxf(Mw[cc*4 + 2][g], Mw[cc*4 + 3][g]));
-            float Lb = 0.0f;
+            __syncthreads();
+            for (int d = tid; d < D; d += NT) {
+                const float v = sm[0*D + d] + sm[1*D + d] + sm[2*D + d] + sm[3*D + d];
+                const float gmax = fmaxf(fmaxf(Mw[cc*4][g], Mw[cc*4 + 1][g]), fmaxf(Mw[cc*4 + 2][g], Mw[cc*4 + 3][g]));
+                float Lb = 0.0f;
 #pragma unroll
-            for (int ww = 0; ww < 4; ++ww) {
-                Lb += Lw[cc*4 + ww][g]*expf(Mw[cc*4 + ww][g] - gmax);
+                for (int ww = 0; ww < 4; ++ww) {
+                    Lb += Lw[cc*4 + ww][g]*expf(Mw[cc*4 + ww][g] - gmax);
+                }
+                const int head = kvhead*G + g;
+                const int j_dst = ((sequence*int(ne01.z) + cc)*ne02 + head)*gridDim.y + blockIdx.y;
+                dst_ptr[int64_t(j_dst)*D + d] = gridDim.y == 1 ? v/Lb : v;
+                if (d == 0 && gridDim.y > 1) {
+                    dst_meta_ptr[j_dst] = make_float2(gmax, Lb);
+                }
             }
-            const int head = kvhead*G + g;
-            const int j_dst = ((sequence*int(ne01.z) + cc)*ne02 + head)*gridDim.y + blockIdx.y;
-            dst_ptr[int64_t(j_dst)*D + d] = gridDim.y == 1 ? v/Lb : v;
-            if (d == 0 && gridDim.y > 1) {
-                dst_meta_ptr[j_dst] = make_float2(gmax, Lb);
-            }
+            __syncthreads();
         }
-        __syncthreads();
     }
 #else
     GGML_UNUSED_VARS(Q_ptr, K_ptr, V_ptr, mask_ptr, sinks_ptr, KV_max_ptr, dst_ptr, dst_meta_ptr, scale, max_bias, m0, m1, n_head_log2, logit_softcap,
