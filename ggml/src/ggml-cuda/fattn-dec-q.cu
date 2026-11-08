@@ -13,6 +13,10 @@
 #include "fattn-common.cuh"
 
 #define DECQ_THREADS 128 // per group
+#ifndef DECQ_MAXNC
+#define DECQ_MAXNC 2 // query columns per warp in the multi-column kernel
+#endif
+#define DECQ_NGR(NB) (((NB) + DECQ_MAXNC - 1)/DECQ_MAXNC)
 #ifndef DECQ_SCHED_BARRIER
 #define DECQ_SCHED_BARRIER() __builtin_amdgcn_sched_barrier(0)
 #endif
@@ -338,8 +342,359 @@ static __global__ void flash_attn_dec_q(
 #endif // defined(FLASH_ATTN_AVAILABLE) && defined(GGML_USE_HIP)
 }
 
+// Multi-column variant (2..8 query columns, MTP / n-gram verify batches), 2026-11-08. One warp handles NC columns of its 32-row tile, so the K row load, the nibble
+// unpack and the V dequantization are done once per row and shared by all columns (the one-group-per-column layout above repeated them per column).
+// NB <= 4: NC = NB, one group of 4 warps. NB 5..8: two groups, NC = ceil(NB/2) columns per warp (the last group may be partial).
+template<int D, int G, int NB, int kvq>
+__launch_bounds__(DECQ_THREADS*DECQ_NGR(NB), 1)
+static __global__ void flash_attn_dec_qm(
+        const char * Q_ptr,
+        const char * K_ptr,
+        const char * V_ptr,
+        const char * mask_ptr,
+        const char * sinks_ptr,
+        const int  * KV_max_ptr,
+        float      * dst_ptr,
+        float2     * dst_meta_ptr,
+        const float scale,
+        const float max_bias,
+        const float m0,
+        const float m1,
+        const uint32_t n_head_log2,
+        const float logit_softcap,
+        const int32_t ne00, const uint3   ne01, const int32_t ne02, const int32_t ne03,
+                            const int32_t nb01, const int32_t nb02, const int32_t nb03,
+        const int32_t ne10, const int32_t ne11, const int32_t ne12, const int32_t ne13,
+                            const int32_t nb11, const int32_t nb12, const int64_t nb13,
+                            const int32_t nb21, const int32_t nb22, const int64_t nb23,
+                            const int32_t ne31, const int32_t ne32, const int32_t ne33,
+                            const int32_t nb31, const int32_t nb32, const int64_t nb33) {
+#if defined(FLASH_ATTN_AVAILABLE) && defined(GGML_USE_HIP)
+    constexpr int NGR    = DECQ_NGR(NB);                // groups of 4 warps
+    constexpr int NC     = (NB + NGR - 1)/NGR;         // columns per warp
+    constexpr int R      = G;                          // query rows per column
+    constexpr int RT     = G*NB;                       // query rows in total
+    constexpr int NT     = DECQ_THREADS*NGR;           // threads per block
+    constexpr int NBLK   = D/32;                       // quantization blocks per row
+    constexpr int BS     = kvq == 1 ? 18 : 34;         // bytes per block
+    constexpr int ROWB   = NBLK*BS;                    // bytes per row
+    constexpr int ROWU   = ROWB/8;                     // 8-byte units per row
+    constexpr int DPL    = D/32;                       // V dims per lane
+    constexpr int HPL    = DPL/2;                      // half2 per lane
+    static_assert(ROWB % 8 == 0, "row size must be a multiple of 8 bytes");
+
+    const int lane = threadIdx.x;
+    const int w    = threadIdx.y;                      // warp index in the block
+    const int wg   = w & 3;                            // warp index in its group
+    const int cg   = w >> 2;                           // group index
+    const int tid  = w*32 + lane;
+    const int tidg = wg*32 + lane;                     // thread index in the group
+
+    const int sequence = blockIdx.z / ne12;
+    const int kvhead   = blockIdx.z - sequence*ne12;
+
+    const char * Qb = Q_ptr + nb03*sequence + int64_t(nb02)*(kvhead*G);
+    const char * Kb = K_ptr + nb13*sequence + int64_t(nb12)*kvhead;
+    const char * Vb = V_ptr + nb23*sequence + int64_t(nb22)*kvhead;
+    const char * maskb = mask_ptr ? mask_ptr + nb33*(sequence % ne33) : nullptr;
+
+    constexpr int bytes_Qi = RT*NBLK*8*4;
+    constexpr int bytes_Qd = RT*NBLK*8;
+    constexpr int bytes_Ps = 4*NGR*32*NC*R*2;
+    constexpr int bytes_ep = NGR*4*D*4;                // epilogue: one query row at a time per group
+    constexpr int bytes_all = (bytes_Qi + bytes_Qd + bytes_Ps) > bytes_ep ? (bytes_Qi + bytes_Qd + bytes_Ps) : bytes_ep;
+    __shared__ __align__(16) char smem[bytes_all];
+    __shared__ float  Mw[4*NGR][NC][R];
+    __shared__ float  Lw[4*NGR][NC][R];
+    int    * Qi = (int    *) smem;
+    float2 * Qd = (float2 *) (smem + bytes_Qi);
+    half   * Ps = (half   *) (smem + bytes_Qi + bytes_Qd);
+
+    // quantize Q (scaled by the softmax scale) to int8 per 32-element block
+    for (int u = tid; u < RT*NBLK; u += NT) {
+        const int r = u / NBLK, blk = u - r*NBLK;
+        const int c = r / G, g = r - c*G;
+        const float * qp = (const float *) (Qb + int64_t(nb01)*c + int64_t(nb02)*g) + blk*32;
+        float v[32];
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const float4 t = ((const float4 *) qp)[k];
+            v[4*k] = t.x*scale; v[4*k + 1] = t.y*scale; v[4*k + 2] = t.z*scale; v[4*k + 3] = t.w*scale;
+        }
+        float amax = 0.0f;
+#pragma unroll
+        for (int k = 0; k < 32; ++k) {
+            amax = fmaxf(amax, fabsf(v[k]));
+        }
+        const float d  = amax/127.0f;
+        const float id = amax > 0.0f ? 127.0f/amax : 0.0f;
+        int sum = 0;
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            int packed = 0;
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const int q = __float2int_rn(v[4*k + j]*id);
+                sum += q;
+                packed |= (q & 0xFF) << (8*j);
+            }
+            Qi[u*8 + k] = packed;
+        }
+        Qd[u] = make_float2(d, kvq == 1 ? 8.0f*d*float(sum) : 0.0f);
+    }
+    __syncthreads();
+
+    float m_run[NC][R];
+    float l_run[NC][R];
+    half2 acc[NC][R][HPL];
+#pragma unroll
+    for (int cc = 0; cc < NC; ++cc) {
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            m_run[cc][r] = -FLT_MAX/2.0f;
+            l_run[cc][r] = 0.0f;
+#pragma unroll
+            for (int h = 0; h < HPL; ++h) {
+                acc[cc][r][h] = make_half2(0.0f, 0.0f);
+            }
+        }
+    }
+
+    const int dbase = lane*DPL;
+    const int vblk  = dbase/32;
+    const int vo    = dbase - vblk*32;
+
+    for (int tile = blockIdx.y; tile*128 < ne11; tile += gridDim.y) {
+        const int row0 = tile*128 + wg*32;
+        const int row  = row0 + lane;
+
+        // ---- K row into registers
+        uint32_t rw[ROWB/4];
+        {
+            const uint2 * kp = (const uint2 *) (Kb + int64_t(row)*nb11);
+#pragma unroll
+            for (int u = 0; u < ROWU; ++u) {
+                const uint2 t = kp[u];
+                rw[2*u] = t.x; rw[2*u + 1] = t.y;
+            }
+        }
+        float mk[NC];
+#pragma unroll
+        for (int cc = 0; cc < NC; ++cc) {
+            const int ca = min(cg*NC + cc, NB - 1);
+            mk[cc] = maskb ? __half2float(((const half *) (maskb + int64_t(nb31)*ca))[row]) : 0.0f;
+        }
+
+        // ---- scores
+        float s[NC][R];
+#pragma unroll
+        for (int cc = 0; cc < NC; ++cc) {
+#pragma unroll
+            for (int r = 0; r < R; ++r) {
+                s[cc][r] = 0.0f;
+            }
+        }
+        auto H16 = [&](const int idx) -> uint32_t { // 16-bit element idx of the row
+            const uint32_t x = rw[idx >> 1];
+            return (idx & 1) ? (x >> 16) : (x & 0xFFFF);
+        };
+#pragma unroll
+        for (int blk = 0; blk < NBLK; ++blk) {
+            int kwd[8];
+            float dk;
+            if constexpr (kvq == 1) {
+                dk = __half2float(__ushort_as_half((unsigned short) H16(9*blk)));
+#pragma unroll
+                for (int k = 0; k < 4; ++k) {
+                    const uint32_t word = H16(9*blk + 1 + 2*k) | (H16(9*blk + 2 + 2*k) << 16);
+                    kwd[k]     = word & 0x0F0F0F0F;
+                    kwd[4 + k] = (word >> 4) & 0x0F0F0F0F;
+                }
+            } else {
+                dk = __half2float(__ushort_as_half((unsigned short) H16(17*blk)));
+#pragma unroll
+                for (int k = 0; k < 8; ++k) {
+                    kwd[k] = H16(17*blk + 1 + 2*k) | (H16(17*blk + 2 + 2*k) << 16);
+                }
+            }
+#pragma unroll
+            for (int cc = 0; cc < NC; ++cc) {
+                const int ca = min(cg*NC + cc, NB - 1);
+#pragma unroll
+                for (int r = 0; r < R; ++r) {
+                    const int4 qa = *(const int4 *) &Qi[((ca*G + r)*NBLK + blk)*8];
+                    const int4 qb = *(const int4 *) &Qi[((ca*G + r)*NBLK + blk)*8 + 4];
+                    int sumi = 0;
+                    sumi = ggml_cuda_dp4a(kwd[0], qa.x, sumi);
+                    sumi = ggml_cuda_dp4a(kwd[1], qa.y, sumi);
+                    sumi = ggml_cuda_dp4a(kwd[2], qa.z, sumi);
+                    sumi = ggml_cuda_dp4a(kwd[3], qa.w, sumi);
+                    sumi = ggml_cuda_dp4a(kwd[4], qb.x, sumi);
+                    sumi = ggml_cuda_dp4a(kwd[5], qb.y, sumi);
+                    sumi = ggml_cuda_dp4a(kwd[6], qb.z, sumi);
+                    sumi = ggml_cuda_dp4a(kwd[7], qb.w, sumi);
+                    const float2 qd = Qd[(ca*G + r)*NBLK + blk];
+                    s[cc][r] += dk*(qd.x*float(sumi) - qd.y);
+                    DECQ_SCHED_BARRIER();
+                }
+            }
+        }
+
+        // ---- online softmax per warp and column
+#pragma unroll
+        for (int cc = 0; cc < NC; ++cc) {
+#pragma unroll
+            for (int r = 0; r < R; ++r) {
+                s[cc][r] += mk[cc];
+                float mt = s[cc][r];
+#pragma unroll
+                for (int off = 16; off > 0; off >>= 1) {
+                    mt = fmaxf(mt, __shfl_xor_sync(0xFFFFFFFF, mt, off, 32));
+                }
+                const float m_new = fmaxf(m_run[cc][r], mt + FATTN_KQ_MAX_OFFSET);
+                const float sc    = expf(m_run[cc][r] - m_new);
+                m_run[cc][r] = m_new;
+                const float p = expf(s[cc][r] - m_new);
+                const half ph = __float2half(p);
+                l_run[cc][r] = l_run[cc][r]*sc + __half2float(ph);
+                const half2 sc2 = __float2half2_rn(sc);
+#pragma unroll
+                for (int h = 0; h < HPL; ++h) {
+                    acc[cc][r][h] *= sc2;
+                }
+                Ps[((w*32 + lane)*NC + cc)*R + r] = ph;
+            }
+        }
+        ggml_cuda_syncwarp();
+
+        // ---- V accumulation: lane = slice of DPL dims; V is dequantized once per row and used for all NC columns
+#pragma unroll 2
+        for (int kv = 0; kv < 32; ++kv) {
+            const char * vrow = Vb + int64_t(row0 + kv)*nb21 + vblk*BS;
+            const half dv = __ushort_as_half(*(const unsigned short *) vrow);
+            const half2 dv2 = __half2half2(dv);
+            half2 pv[HPL];
+            if constexpr (kvq == 1) {
+                const bool hi = vo >= 16;
+                const unsigned short * qp = (const unsigned short *) (vrow + 2 + (hi ? vo - 16 : vo));
+#pragma unroll
+                for (int h = 0; h < HPL; ++h) {
+                    uint32_t wv = qp[h];
+                    if (hi) {
+                        wv >>= 4;
+                    }
+                    const uint32_t x = ((wv & 0x000F) | ((wv & 0x0F00) << 8)) | 0x64006400;
+                    half2 t = *(const half2 *) &x;
+                    t = t - make_half2(__ushort_as_half(0x6408), __ushort_as_half(0x6408)); // 1024 + n - 1032
+                    pv[h] = t*dv2;
+                }
+            } else {
+                const unsigned short * qp = (const unsigned short *) (vrow + 2 + vo);
+#pragma unroll
+                for (int h = 0; h < HPL; ++h) {
+                    const uint32_t wv = qp[h];
+                    const half2 t = make_half2(__int2half_rn((int) (int8_t) (wv & 0xFF)), __int2half_rn((int) (int8_t) (wv >> 8)));
+                    pv[h] = t*dv2;
+                }
+            }
+#pragma unroll
+            for (int cc = 0; cc < NC; ++cc) {
+                const uint32_t * pr = (const uint32_t *) &Ps[((w*32 + kv)*NC + cc)*R];
+#pragma unroll
+                for (int r2 = 0; r2 < R/2; ++r2) {
+                    const uint32_t pw = pr[r2];
+                    const half2 pp2 = *(const half2 *) &pw;
+                    const half2 p0 = __low2half2(pp2);
+                    const half2 p1 = __high2half2(pp2);
+#pragma unroll
+                    for (int h = 0; h < HPL; ++h) {
+                        acc[cc][2*r2][h]     += pv[h]*p0;
+                        acc[cc][2*r2 + 1][h] += pv[h]*p1;
+                    }
+                }
+            }
+        }
+        ggml_cuda_syncwarp();
+    }
+
+    // ---- epilogue: combine the 4 warps of each group, write the partial result
+#pragma unroll
+    for (int cc = 0; cc < NC; ++cc) {
+#pragma unroll
+        for (int r = 0; r < R; ++r) {
+            float l = l_run[cc][r];
+#pragma unroll
+            for (int off = 16; off > 0; off >>= 1) {
+                l += __shfl_xor_sync(0xFFFFFFFF, l, off, 32);
+            }
+            l_run[cc][r] = l;
+        }
+    }
+    __syncthreads(); // all warps are done with Qi / Ps
+    if (lane == 0) {
+#pragma unroll
+        for (int cc = 0; cc < NC; ++cc) {
+#pragma unroll
+            for (int r = 0; r < R; ++r) {
+                Mw[w][cc][r] = m_run[cc][r];
+                Lw[w][cc][r] = l_run[cc][r];
+            }
+        }
+    }
+    __syncthreads();
+
+    float * sm = (float *) smem + cg*(4*D);
+#pragma unroll
+    for (int cc = 0; cc < NC; ++cc) {
+        const int ca = cg*NC + cc;
+#pragma unroll
+        for (int g = 0; g < G; ++g) {
+            const float gmax = fmaxf(fmaxf(Mw[cg*4][cc][g], Mw[cg*4 + 1][cc][g]), fmaxf(Mw[cg*4 + 2][cc][g], Mw[cg*4 + 3][cc][g]));
+            const float fw = expf(m_run[cc][g] - gmax);
+            {
+                float * dstp = sm + wg*D + dbase;
+#pragma unroll
+                for (int h = 0; h < HPL; ++h) {
+                    const float2 f = __half22float2(acc[cc][g][h]);
+                    dstp[2*h]     = f.x*fw;
+                    dstp[2*h + 1] = f.y*fw;
+                }
+            }
+            __syncthreads();
+            if (ca < NB) {
+                for (int d = tidg; d < D; d += DECQ_THREADS) {
+                    const float v = sm[0*D + d] + sm[1*D + d] + sm[2*D + d] + sm[3*D + d];
+                    float Lb = 0.0f;
+#pragma unroll
+                    for (int ww = 0; ww < 4; ++ww) {
+                        Lb += Lw[cg*4 + ww][cc][g]*expf(Mw[cg*4 + ww][cc][g] - gmax);
+                    }
+                    const int head = kvhead*G + g;
+                    const int j_dst = ((sequence*int(ne01.z) + ca)*ne02 + head)*gridDim.y + blockIdx.y;
+                    dst_ptr[int64_t(j_dst)*D + d] = gridDim.y == 1 ? v/Lb : v;
+                    if (d == 0 && gridDim.y > 1) {
+                        dst_meta_ptr[j_dst] = make_float2(gmax, Lb);
+                    }
+                }
+            }
+            __syncthreads();
+        }
+    }
+#else
+    GGML_UNUSED_VARS(Q_ptr, K_ptr, V_ptr, mask_ptr, sinks_ptr, KV_max_ptr, dst_ptr, dst_meta_ptr, scale, max_bias, m0, m1, n_head_log2, logit_softcap,
+        ne00, ne01, ne02, ne03, nb01, nb02, nb03, ne10, ne11, ne12, ne13, nb11, nb12, nb13, nb21, nb22, nb23, ne31, ne32, ne33, nb31, nb32, nb33);
+    NO_DEVICE_CODE;
+#endif // defined(FLASH_ATTN_AVAILABLE) && defined(GGML_USE_HIP)
+}
+
 template<int D, int G, int NB, int kvq>
 static void launch_dec_q(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    static const bool use_multi = [] { const char * e = getenv("GGML_CUDA_FATTN_DECQ_MULTI"); return e == nullptr || atoi(e) != 0; }();
+    if (NB >= 2 && use_multi) {
+        fattn_kernel_t kernel = flash_attn_dec_qm<D, G, NB, kvq>;
+        launch_fattn<D, NB, G>(ctx, dst, kernel, 4*DECQ_NGR(NB), 0, 128, false, false, false, false, 32);
+        return;
+    }
     fattn_kernel_t kernel = flash_attn_dec_q<D, G, NB, kvq>;
     launch_fattn<D, NB, G>(ctx, dst, kernel, 4*NB, 0, 128, false, false, false, false, 32);
 }
