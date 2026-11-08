@@ -1,6 +1,6 @@
 // fattn-dec-q.cu: decode attention for quantized K/V (q4_0 / q8_0) on RDNA (written 2026-11-07).
 //
-// One block = one KV head (and sequence) x interleaved 128-row KV tiles, with NB groups of 4 warps, one group per query column (NB <= 4: plain decode or an
+// One block = one KV head (and sequence) x interleaved 128-row KV tiles, with NB groups of 4 warps, one group per query column (NB <= 8: plain decode or an
 // MTP verify batch). All G query heads of the KV head are handled by every group, so a group works on R = G query rows and the groups read the same K/V tile
 // at the same time (served by L1/L2, the cache is read from memory once).
 //   scores: one KV row per lane. The row (q4_0 144 B / q8_0 272 B for head size 256) is loaded with 8-byte loads into registers and dotted with the
@@ -352,6 +352,10 @@ static void switch_nb(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
         case 2: launch_dec_q<D, G, 2, kvq>(ctx, dst); break;
         case 3: launch_dec_q<D, G, 3, kvq>(ctx, dst); break;
         case 4: launch_dec_q<D, G, 4, kvq>(ctx, dst); break;
+        case 5: launch_dec_q<D, G, 5, kvq>(ctx, dst); break;
+        case 6: launch_dec_q<D, G, 6, kvq>(ctx, dst); break;
+        case 7: launch_dec_q<D, G, 7, kvq>(ctx, dst); break;
+        case 8: launch_dec_q<D, G, 8, kvq>(ctx, dst); break;
         default: GGML_ABORT("dec_q: unsupported number of query columns");
     }
 }
@@ -364,7 +368,7 @@ bool ggml_cuda_flash_attn_ext_dec_q_supported(const ggml_tensor * dst) {
     float max_bias = 0.0f, logit_softcap = 0.0f;
     memcpy(&max_bias,      (const float *) dst->op_params + 1, sizeof(float));
     memcpy(&logit_softcap, (const float *) dst->op_params + 2, sizeof(float));
-    if (!mask || max_bias != 0.0f || logit_softcap != 0.0f || dst->src[4] != nullptr || Q->ne[3] != 1 || Q->ne[1] > 4 || K->ne[1] % FATTN_KQ_STRIDE != 0) {
+    if (!mask || max_bias != 0.0f || logit_softcap != 0.0f || dst->src[4] != nullptr || Q->ne[3] != 1 || Q->ne[1] > 8 || K->ne[1] % FATTN_KQ_STRIDE != 0) {
         return false;
     }
     if (K->type != V->type || (K->type != GGML_TYPE_Q4_0 && K->type != GGML_TYPE_Q8_0) || K->nb[1] % 8 != 0 || V->nb[1] % 8 != 0 ||

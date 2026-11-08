@@ -766,7 +766,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         }
     }
 
-    // 2026-11-07: dedicated quantized decode kernel (1..4 query columns, GQA 6 at head size 256 / GQA 4 at 128). GGML_CUDA_FATTN_DECQ=0 disables it.
+    // 2026-11-07: dedicated quantized decode kernel (1..8 query columns, extended from 4 on 2026-11-08: batch 5+ at 27k depth cost +25 ms on the generic path, GQA 6 at head size 256 / GQA 4 at 128). GGML_CUDA_FATTN_DECQ=0 disables it.
     if (amd_wmma_available(cc) && gqa_opt_applies && ggml_cuda_flash_attn_ext_dec_q_supported(dst)) {
         static const bool s_decq = [] { const char * e = getenv("GGML_CUDA_FATTN_DECQ"); return e == nullptr || atoi(e) != 0; }();
         if (s_decq) {
