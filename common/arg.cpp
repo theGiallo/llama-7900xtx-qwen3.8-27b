@@ -2975,6 +2975,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ));
     add_opt(common_arg(
+        {"--gdn-gate-fuse"},
+        {"--no-gdn-gate-fuse"},
+        "fuse the gated-delta-net gate chain (add + softplus + mul) of Qwen3.5-style linear-attention layers into one kernel; CUDA/HIP backend only (default: enabled)",
+        [](common_params & /*params*/, bool value) {
+#ifdef _WIN32
+            _putenv_s("GGML_CUDA_GDN_GATE_FUSE", value ? "1" : "0");
+#else
+            setenv("GGML_CUDA_GDN_GATE_FUSE", value ? "1" : "0", 1);
+#endif
+        }
+    ).set_env("LLAMA_ARG_GDN_GATE_FUSE"));
+    add_opt(common_arg(
         {"--op-offload"},
         {"--no-op-offload"},
         string_format("whether to offload host tensor operations to device (default: %s)", params.no_op_offload ? "false" : "true"),

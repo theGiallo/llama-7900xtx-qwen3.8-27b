@@ -2942,6 +2942,24 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
         }
 
         if (res || memcmp(&graph->node_props[i], &prop, sizeof(prop)) != 0) {
+            static const bool why = getenv("GGML_CUDA_GRAPH_WHY") != nullptr;
+            if (why && cgraph->n_nodes > 1000 && cgraph->nodes[0]->ne[1] <= 16) {
+                static int n_prints = 0;
+                const auto & o = graph->node_props[i];
+                if (!res && n_prints++ < 60) {
+                    std::string d;
+                    if (memcmp(o.node.ne, prop.node.ne, sizeof(prop.node.ne))) d += " ne";
+                    if (memcmp(o.node.nb, prop.node.nb, sizeof(prop.node.nb))) d += " nb";
+                    if (o.node.data != prop.node.data) d += " data";
+                    if (o.node.op_params[0] != prop.node.op_params[0] || memcmp(o.node.op_params, prop.node.op_params, sizeof(prop.node.op_params))) d += " op_params";
+                    for (int j = 0; j < GGML_MAX_SRC; ++j) {
+                        if (o.node_src_data_ptrs[j] != prop.node_src_data_ptrs[j]) d += " src" + std::to_string(j) + "_data";
+                        if (memcmp(o.node_src_ne[j], prop.node_src_ne[j], sizeof(prop.node_src_ne[j]))) d += " src" + std::to_string(j) + "_ne";
+                        if (memcmp(o.node_src_nb[j], prop.node_src_nb[j], sizeof(prop.node_src_nb[j]))) d += " src" + std::to_string(j) + "_nb";
+                    }
+                    fprintf(stderr, "GRAPHWHY n_nodes=%d first_changed_node=%d op=%s name=%s fields:%s\n", cgraph->n_nodes, i, ggml_op_name(cgraph->nodes[i]->op), cgraph->nodes[i]->name, d.c_str());
+                }
+            }
             graph->node_props[i] = prop;
             res = true;
         }
@@ -4736,6 +4754,15 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         return 1;
     }
 
+    // 2026-11-08: GDN gate chain ADD(alpha, dt) -> softplus -> MUL(a) in one kernel. GGML_CUDA_GDN_GATE_FUSE=0 disables it.
+    if (ggml_cuda_can_fuse(cgraph, i, { GGML_OP_ADD, GGML_OP_UNARY, GGML_OP_MUL }, { GGML_UNARY_OP_SOFTPLUS })) {
+        static const bool gate_fuse = [] { const char * e = getenv("GGML_CUDA_GDN_GATE_FUSE"); return e == nullptr || atoi(e) != 0; }();
+        if (gate_fuse && ggml_cuda_gdn_gate_supported(node, cgraph->nodes[i + 1], cgraph->nodes[i + 2])) {
+            ggml_cuda_op_gdn_gate(*cuda_ctx, node, cgraph->nodes[i + 1], cgraph->nodes[i + 2]);
+            return 2;
+        }
+    }
+
     if (ggml_cuda_can_fuse(cgraph, i, { GGML_OP_UNARY, GGML_OP_MUL }, { GGML_UNARY_OP_SILU }) ||
         ggml_cuda_can_fuse(cgraph, i, { GGML_OP_UNARY, GGML_OP_MUL }, { GGML_UNARY_OP_SIGMOID }) ||
         ggml_cuda_can_fuse(cgraph, i, { GGML_OP_UNARY, GGML_OP_MUL }, { GGML_UNARY_OP_SOFTPLUS })) {
@@ -4804,13 +4831,35 @@ struct ggml_cuda_op_prof {
             fprintf(stderr, "OPPROF ==== graph n_nodes=%d graphs=%ld total_ms_per_graph=%.3f\n", nn, sg.n_graphs, sg.total_ms / sg.n_graphs);
             int shown = 0;
             for (auto & e : v) {
-                if (shown++ >= 18) break;
+                if (shown++ >= (getenv("GGML_CUDA_OP_PROF_TOP") ? atoi(getenv("GGML_CUDA_OP_PROF_TOP")) : 18)) break;
                 fprintf(stderr, "OPPROF %8.3f ms/graph %6.1f calls/graph  %s\n", e.second.first / sg.n_graphs, (double) e.second.second / sg.n_graphs, e.first.c_str());
             }
         }
     }
 };
 static ggml_cuda_op_prof g_op_prof;
+
+// GGML_CUDA_SKIP_OPS=OP1,OP2: skip these ops in the graph executor (diagnostic, the output is garbage). Comma separated ggml op names; "MUL_MAT" also matches MUL_MAT_ID.
+static bool ggml_cuda_diag_skip(const ggml_tensor * node) {
+    static const int small_mm = getenv("GGML_CUDA_SKIP_SMALLMM") ? atoi(getenv("GGML_CUDA_SKIP_SMALLMM")) : 0;
+    if (small_mm > 0 && node->op == GGML_OP_MUL_MAT && node->src[0]->ne[1] <= small_mm) {
+        return true;
+    }
+    static const char * env = getenv("GGML_CUDA_SKIP_OPS");
+    if (!env) {
+        return false;
+    }
+    static const std::string list = std::string(",") + env + ",";
+    const std::string name = std::string(",") + ggml_op_name(node->op) + ",";
+    if (list.find(name) != std::string::npos) {
+        return true;
+    }
+    if (node->op == GGML_OP_UNARY) {
+        const std::string un = std::string(",UNARY:") + ggml_unary_op_name(ggml_get_unary_op(node)) + ",";
+        return list.find(un) != std::string::npos;
+    }
+    return false;
+}
 
 static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, const void * graph_key) {
     bool graph_evaluated_or_captured = false;
@@ -4979,7 +5028,28 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     continue;
                 }
 
+                if (ggml_cuda_diag_skip(node)) {
+                    continue;
+                }
+
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
+
+                {
+                    static const bool dump = getenv("GGML_CUDA_DUMP_NODES") != nullptr;
+                    static bool dumped = false;
+                    if (dump && !dumped && cgraph->n_nodes > 1000 && cgraph->nodes[0]->ne[1] == 1) {
+                        if (nodes_to_skip != 0) {
+                            fprintf(stderr, "DUMPFUSED %d %s(%s) + %d more, last %s(%s)\n", i, ggml_op_name(node->op), node->name, nodes_to_skip,
+                                    ggml_op_name(cgraph->nodes[i + nodes_to_skip]->op), cgraph->nodes[i + nodes_to_skip]->name);
+                        } else {
+                            fprintf(stderr, "DUMPNODE %d %s %s ne=[%ld,%ld,%ld,%ld]", i, ggml_op_name(node->op), node->name, (long) node->ne[0], (long) node->ne[1], (long) node->ne[2], (long) node->ne[3]);
+                            if (node->op == GGML_OP_UNARY) fprintf(stderr, " unary=%s", ggml_unary_op_name(ggml_get_unary_op(node)));
+                            if (node->op == GGML_OP_MUL_MAT) fprintf(stderr, " w=%s %ldx%ld", ggml_type_name(node->src[0]->type), (long) node->src[0]->ne[0], (long) node->src[0]->ne[1]);
+                            fprintf(stderr, "\n");
+                        }
+                        if (i >= cgraph->n_nodes - 1 - nodes_to_skip) dumped = true;
+                    }
+                }
 
                 if (nodes_to_skip != 0) {
 #ifdef GGML_CUDA_DEBUG

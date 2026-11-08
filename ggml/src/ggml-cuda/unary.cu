@@ -761,6 +761,44 @@ void ggml_cuda_op_unary_mul(ggml_backend_cuda_context & ctx, ggml_tensor * unary
     }
 }
 
+/* fused GDN gate: dst = softplus(x + dt) * a, dt and a broadcast over all but the first dimension */
+
+static __global__ void gdn_gate_f32(const float * x, const float * dt, const float * a, float * dst, const int64_t n, const int64_t h) {
+    const int64_t i = (int64_t) blockIdx.x*blockDim.x + threadIdx.x;
+    if (i >= n) {
+        return;
+    }
+    const int64_t j = i % h;
+    dst[i] = op_softplus(x[i] + dt[j])*a[j];
+}
+
+bool ggml_cuda_gdn_gate_supported(const ggml_tensor * add_node, const ggml_tensor * unary_node, const ggml_tensor * mul_node) {
+    if (add_node->op != GGML_OP_ADD || unary_node->op != GGML_OP_UNARY || mul_node->op != GGML_OP_MUL || ggml_get_unary_op(unary_node) != GGML_UNARY_OP_SOFTPLUS) {
+        return false;
+    }
+    if (unary_node->src[0] != add_node || (mul_node->src[0] != unary_node && mul_node->src[1] != unary_node)) {
+        return false;
+    }
+    const ggml_tensor * x  = ggml_are_same_shape(add_node->src[0], add_node) ? add_node->src[0] : add_node->src[1];
+    const ggml_tensor * dt = x == add_node->src[0] ? add_node->src[1] : add_node->src[0];
+    const ggml_tensor * a  = mul_node->src[0] == unary_node ? mul_node->src[1] : mul_node->src[0];
+    const int64_t h = add_node->ne[0];
+    return ggml_are_same_shape(x, add_node) && ggml_is_contiguous(x) && ggml_nelements(dt) == h && ggml_nelements(a) == h &&
+           ggml_is_contiguous(dt) && ggml_is_contiguous(a) && ggml_are_same_shape(mul_node, add_node) && ggml_is_contiguous(mul_node) &&
+           x->type == GGML_TYPE_F32 && dt->type == GGML_TYPE_F32 && a->type == GGML_TYPE_F32 && mul_node->type == GGML_TYPE_F32 &&
+           dt->ne[0] == h && a->ne[0] == h;
+}
+
+void ggml_cuda_op_gdn_gate(ggml_backend_cuda_context & ctx, ggml_tensor * add_node, ggml_tensor * unary_node, ggml_tensor * mul_node) {
+    const ggml_tensor * x  = ggml_are_same_shape(add_node->src[0], add_node) ? add_node->src[0] : add_node->src[1];
+    const ggml_tensor * dt = x == add_node->src[0] ? add_node->src[1] : add_node->src[0];
+    const ggml_tensor * a  = mul_node->src[0] == unary_node ? mul_node->src[1] : mul_node->src[0];
+    const int64_t n = ggml_nelements(mul_node);
+    const int64_t h = add_node->ne[0];
+    const int block = 256;
+    gdn_gate_f32<<<(int) ((n + block - 1)/block), block, 0, ctx.stream()>>>((const float *) x->data, (const float *) dt->data, (const float *) a->data, (float *) mul_node->data, n, h);
+}
+
 /* fused relu + sqr */
 
 void ggml_cuda_op_relu_sqr(ggml_backend_cuda_context & ctx, ggml_tensor * relu_node, ggml_tensor * sqr_node) {
