@@ -12249,6 +12249,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
 
     // asymmetric head_dim (hsk != hsv) with one or both sides not 64-aligned
+    // dec_q coverage (2026-11-07): decode shapes of the 27B (hs 256, 4 KV heads, GQA 6) and TwIL-8B (hs 128, 8 KV heads, GQA 4), q4_0 / q8_0 KV, 1..4 columns
+    for (int64_t nbq : { 1, 2, 3, 4 }) {
+        for (int64_t kvq : { 256, 1024, 4608 }) {
+            for (ggml_type tq : { GGML_TYPE_Q4_0, GGML_TYPE_Q8_0 }) {
+                test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kvq, nbq, true, false, 0, 0, GGML_PREC_F32, tq, tq));
+                test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 1}, kvq, nbq, true, false, 0, 0, GGML_PREC_F32, tq, tq));
+            }
+        }
+    }
     test_cases.emplace_back(new test_flash_attn_ext(72, 64, 4, {1, 1}, 256, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(64, 72, 4, {1, 1}, 256, 2, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(65, 67, 4, {1, 1}, 113, 75, true, true, 8.0f, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
@@ -12988,6 +12997,32 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
 
     // Qwen3-VL-8B https://github.com/ggml-org/llama.cpp/issues/17012
     test_cases.emplace_back(new test_flash_attn_ext(72, 72, 16, {1, 1}, 5776, 5776, false, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    // Qwen3.8-27B prefill geometry (hs 256, 4 KV heads, GQA 6, 512-token ubatch) at depth, f16 and q4_0 KV (RDNA FA tuning, 2026-11-07)
+    for (int64_t kv : { 8192, 32768, 65536 }) {
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0));
+    }
+    // mulmat decode bandwidth (2026-11-07): weight matrices sized to exceed the 96 MB infinity cache (65536 x 5120) for 1 column (decode) and 4 (MTP verify) per weight type
+    for (ggml_type tw : { GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_NL,
+                          GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ3_S, GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_IQ2_S, GGML_TYPE_IQ1_S, GGML_TYPE_MXFP4 }) {
+        for (int64_t nn : { 1, 4 }) {
+            test_cases.emplace_back(new test_mul_mat(tw, GGML_TYPE_F32, 65536, nn, 5120, { 1, 1 }, { 1, 1 }));
+        }
+    }
+    // decode (1 query = plain decode, 4 = MTP verify of 3 drafts) at depth, Qwen3.8-27B geometry, q4_0 / q8_0 / f16 KV, and TwIL-8B (hs 128, 8 KV heads, GQA 4) (2026-11-07)
+    for (int64_t nb : { 1, 4 }) {
+        for (int64_t kv : { 4096, 16384, 65536, 131072, 262144 }) {
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0));
+        }
+        for (int64_t kv : { 16384, 65536, 131072 }) {
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+        for (int64_t kv : { 8192, 32768, 131072 }) {
+            test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0));
+            test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+    }
 
     // Sparse flash attention (n_kv_max hint) decode across KV depths.
     // Shapes: 576/512 DeepSeek MLA, 512/512 DeepSeek-V4/GLM-5.2, 256/256 gqa12 Qwen QSA.
