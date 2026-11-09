@@ -1754,7 +1754,8 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
         causal_attn = swa_type != LLAMA_SWA_TYPE_NONE;
     }
 
-    //const int64_t t_start = ggml_time_us();
+    static const bool kq_prof = getenv("LLAMA_KQ_PROF") != nullptr;
+    const int64_t t_start = kq_prof ? ggml_time_us() : 0;
 
     const args_set_input_kq_mask args = {
         /*.hparams          =*/ hparams,
@@ -1774,9 +1775,14 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
         set_input_kq_mask_impl<float>(args, (float *) dst->data, causal_attn);
     }
 
-    //const int64_t t_end = ggml_time_us();
+    if (kq_prof) {
+        static double t_sum = 0; static long n_calls = 0;
+        t_sum += (ggml_time_us() - t_start) / 1000.0;
+        if (++n_calls % 256 == 0) {
+            fprintf(stderr, "KQMASK n_kv=%lld tokens=%u avg_ms=%.3f (calls=%ld)\n", (long long) n_kv, n_tokens, t_sum / n_calls, n_calls);
+        }
+    }
 
-    //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);
 }
 
 void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {

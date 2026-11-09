@@ -1959,7 +1959,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
 
             static const bool dprof = getenv("SPEC_DFT_PROF") != nullptr;
-            static double t_proc = 0, t_samp = 0; static long n_st = 0;
+            static double t_proc = 0, t_samp = 0, t_wait = 0, t_cpu = 0; static long n_st = 0;
             const int64_t tp0 = dprof ? ggml_time_us() : 0;
             int ret = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch.get());
             if (ret != 0) {
@@ -1986,7 +1986,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 auto * smpl = smpls[seq_id].get();
 
                 const int64_t ts0 = dprof ? ggml_time_us() : 0;
+                if (dprof) { llama_synchronize(ctx_dft); t_wait += (ggml_time_us() - ts0) / 1000.0; } // separates the GPU wait from the CPU sampling below
+                const int64_t ts1 = dprof ? ggml_time_us() : 0;
                 const llama_token id_sampled = common_sampler_sample(smpl, ctx_dft, i_last[seq_id], true);
+                if (dprof) { t_cpu += (ggml_time_us() - ts1) / 1000.0; }
                 const float * h_row = llama_get_embeddings_nextn_ith(ctx_dft, i_last[seq_id]);
 
                 const auto * cur_p = common_sampler_get_candidates(smpl, true);
@@ -1998,7 +2001,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                             common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
                 }
 
-                if (dprof) { t_proc += (ts0 - tp0) / 1000.0; t_samp += (ggml_time_us() - ts0) / 1000.0; if (++n_st % 8 == 0) fprintf(stderr, "DRAFTSTEP steps=%ld avg_process_ms=%.2f avg_sample_ms=%.2f\n", n_st, t_proc / n_st, t_samp / n_st); }
+                if (dprof) { t_proc += (ts0 - tp0) / 1000.0; t_samp += (ggml_time_us() - ts0) / 1000.0; if (++n_st % 8 == 0) fprintf(stderr, "DRAFTSTEP steps=%ld avg_process_ms=%.2f avg_sample_ms=%.2f (gpu_wait=%.2f cpu_sample=%.2f)\n", n_st, t_proc / n_st, t_samp / n_st, t_wait / n_st, t_cpu / n_st); }
                 // add drafted token for each sequence
                 const llama_token id = dparams.at(seq_id).result_q ? id_sampled : cur_p->data[0].id;
 

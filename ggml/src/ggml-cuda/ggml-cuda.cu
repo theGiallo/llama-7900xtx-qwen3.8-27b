@@ -2945,12 +2945,12 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
 
         if (res || memcmp(&graph->node_props[i], &prop, sizeof(prop)) != 0) {
             static const bool why = getenv("GGML_CUDA_GRAPH_WHY") != nullptr;
-            if (why && cgraph->n_nodes > (getenv("GGML_CUDA_GRAPH_WHY_MIN") ? atoi(getenv("GGML_CUDA_GRAPH_WHY_MIN")) : 1000) && cgraph->nodes[0]->ne[1] <= 16) {
+            if (why && cgraph->n_nodes > (getenv("GGML_CUDA_GRAPH_WHY_MIN") ? atoi(getenv("GGML_CUDA_GRAPH_WHY_MIN")) : 1000) && (getenv("GGML_CUDA_GRAPH_WHY_MIN") || cgraph->nodes[0]->ne[1] <= 16)) {
                 static int n_prints = 0;
                 const auto & o = graph->node_props[i];
                 if (!res && n_prints++ < 60) {
                     std::string d;
-                    if (memcmp(o.node.ne, prop.node.ne, sizeof(prop.node.ne))) d += " ne";
+                    if (memcmp(o.node.ne, prop.node.ne, sizeof(prop.node.ne))) d += " ne[" + std::to_string(o.node.ne[0]) + "," + std::to_string(o.node.ne[1]) + "," + std::to_string(o.node.ne[2]) + "->" + std::to_string(prop.node.ne[0]) + "," + std::to_string(prop.node.ne[1]) + "," + std::to_string(prop.node.ne[2]) + "]";
                     if (memcmp(o.node.nb, prop.node.nb, sizeof(prop.node.nb))) d += " nb";
                     if (o.node.data != prop.node.data) d += " data";
                     if (o.node.op_params[0] != prop.node.op_params[0] || memcmp(o.node.op_params, prop.node.op_params, sizeof(prop.node.op_params))) d += " op_params";
