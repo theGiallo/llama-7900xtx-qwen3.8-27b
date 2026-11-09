@@ -577,6 +577,7 @@ enum best_fattn_kernel {
     BEST_FATTN_KERNEL_MMA_F16 = 400,
     BEST_FATTN_KERNEL_MMA_Q   = 410, // MMA kernel with fused q4_0 / q8_0 K/V loading (decode, 1..8 query columns), RDNA 2026-11-07
     BEST_FATTN_KERNEL_DEC_Q   = 420, // dedicated decode kernel for q4_0 / q8_0 K/V (fattn-dec-q.cu), RDNA 2026-11-07
+    BEST_FATTN_KERNEL_WDEC    = 430, // WMMA verify kernel for q4_0 K/V, 2..5 query columns (fattn-wdec.cu), RDNA 2026-11-08
 };
 
 // K/V types for which there is a vector kernel template instance, other kernels convert these to f16:
@@ -598,6 +599,8 @@ static bool ggml_cuda_fattn_kv_type_supported(const ggml_type type) {
 
 bool ggml_cuda_flash_attn_ext_dec_q_supported(const ggml_tensor * dst);
 void ggml_cuda_flash_attn_ext_dec_q(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+bool ggml_cuda_flash_attn_ext_wdec_supported(const ggml_tensor * dst);
+void ggml_cuda_flash_attn_ext_wdec(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 static int ggml_cuda_fattn_mma_q_ncols2(const int gqa_ratio) {
     return gqa_ratio % 4 == 0 ? 4 : (gqa_ratio % 2 == 0 ? 2 : 0);
@@ -766,6 +769,15 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         }
     }
 
+    // 2026-11-08: WMMA verify kernel for several query columns that share the same q4_0 K/V
+    if (amd_wmma_available(cc) && gqa_opt_applies && ggml_cuda_flash_attn_ext_wdec_supported(dst)) {
+        static const bool s_wdec = [] { const char * e = getenv("GGML_CUDA_FATTN_WDEC"); return e != nullptr && atoi(e) != 0; }();
+        static const int  s_wdec_min = [] { const char * e = getenv("GGML_CUDA_FATTN_WDEC_MIN"); return e ? atoi(e) : 3; }();
+        if (s_wdec && Q->ne[1] >= s_wdec_min) {
+            return BEST_FATTN_KERNEL_WDEC;
+        }
+    }
+
     // 2026-11-07: dedicated quantized decode kernel (1..8 query columns, extended from 4 on 2026-11-08: batch 5+ at 27k depth cost +25 ms on the generic path, GQA 6 at head size 256 / GQA 4 at 128). GGML_CUDA_FATTN_DECQ=0 disables it.
     if (amd_wmma_available(cc) && gqa_opt_applies && ggml_cuda_flash_attn_ext_dec_q_supported(dst)) {
         static const bool s_decq = [] { const char * e = getenv("GGML_CUDA_FATTN_DECQ"); return e == nullptr || atoi(e) != 0; }();
@@ -858,6 +870,7 @@ static void ggml_cuda_fattn_need_f16(
             break;
         case BEST_FATTN_KERNEL_MMA_Q:
         case BEST_FATTN_KERNEL_DEC_Q:
+        case BEST_FATTN_KERNEL_WDEC:
         case BEST_FATTN_KERNEL_VEC_GQA:
             need_f16_K = false;
             need_f16_V = false;
@@ -898,6 +911,7 @@ static void ggml_cuda_fattn_log_choice(const best_fattn_kernel kernel, const ggm
         case BEST_FATTN_KERNEL_MMA_F16: kernel_name = "MMA_F16"; break;
         case BEST_FATTN_KERNEL_MMA_Q:   kernel_name = "MMA_Q";   break;
         case BEST_FATTN_KERNEL_DEC_Q:   kernel_name = "DEC_Q";   break;
+        case BEST_FATTN_KERNEL_WDEC:    kernel_name = "WDEC";    break;
         case BEST_FATTN_KERNEL_NONE:    break;
     }
 
@@ -983,6 +997,9 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             break;
         case BEST_FATTN_KERNEL_DEC_Q:
             ggml_cuda_flash_attn_ext_dec_q(ctx, dst);
+            break;
+        case BEST_FATTN_KERNEL_WDEC:
+            ggml_cuda_flash_attn_ext_wdec(ctx, dst);
             break;
     }
 }

@@ -981,7 +981,7 @@ template <int DV, int ncols1, int ncols2>
 void launch_fattn(
     ggml_backend_cuda_context & ctx, ggml_tensor * dst, fattn_kernel_t fattn_kernel, const int nwarps, const size_t nbytes_shared,
     const int nbatch_fa, const bool need_f16_K, const bool need_f16_V, const bool stream_k, const bool use_sparse,
-    const int warp_size = WARP_SIZE, const bool async_kv_preload = false
+    const int warp_size = WARP_SIZE, const bool async_kv_preload = false, const int occ_mult = 1
 ) {
     constexpr int ncols = ncols1 * ncols2;
 
@@ -1136,6 +1136,7 @@ void launch_fattn(
     int max_blocks_per_sm = 1; // Max. number of active blocks limited by occupancy.
     CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&max_blocks_per_sm, fattn_kernel, block_dim.x * block_dim.y * block_dim.z, nbytes_shared));
     GGML_ASSERT(max_blocks_per_sm > 0);
+    max_blocks_per_sm *= occ_mult;
     int parallel_blocks = max_blocks_per_sm;
 
     const int64_t n_kv = use_sparse ? n_kv_max : K->ne[1];
@@ -1247,6 +1248,14 @@ void launch_fattn(
 
     GGML_ASSERT(block_dim.x % warp_size == 0);
 
+    {
+        static const bool fa_log = getenv("GGML_CUDA_FATTN_LAUNCH_LOG") != nullptr;
+        if (fa_log) {
+            fprintf(stderr, "fattn launch: grid=(%u,%u,%u) block=(%u,%u,%u) shared=%zu max_blocks_per_sm=%d nsm=%d parallel_blocks=%d stream_k=%d n_kv=%ld ncols1=%d ncols2=%d\n",
+                blocks_num.x, blocks_num.y, blocks_num.z, block_dim.x, block_dim.y, block_dim.z, nbytes_shared, max_blocks_per_sm, nsm, parallel_blocks,
+                (int) stream_k, (long) n_kv, (int) ncols1, (int) ncols2);
+        }
+    }
     ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num, block_dim, nbytes_shared, main_stream);
     ggml_cuda_kernel_launch(fattn_kernel, launch_params,
         (const char *) Q->data,
