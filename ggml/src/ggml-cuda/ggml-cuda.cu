@@ -5216,6 +5216,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 
     if (g_op_prof.gstats) {
         g_op_prof.gstat[{cgraph->n_nodes, use_cuda_graph ? 1 : 0}]++;
+        { static long n_calls = 0; if (++n_calls % 200 == 0) { for (auto & [k, v] : g_op_prof.gstat) { fprintf(stderr, "GRAPHSTAT n_nodes=%d %s calls=%ld\n", k.first, k.second ? "graph_replay" : "eager", v); } } }
     }
     if (use_cuda_graph && cuda_graph_update_required) {
         // Start CUDA graph capture

@@ -15,6 +15,7 @@
 #include "llama.h"
 
 #include <map>
+#include <utility>
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
@@ -1531,7 +1532,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // LLAMA_CTX_PROF=1: average host time per phase of process_ubatch for small batches (apply / reuse-or-build / set_inputs / compute submit), printed every 32 calls per context
     static const bool ctx_prof = getenv("LLAMA_CTX_PROF") != nullptr;
     struct ctx_prof_acc { double ap = 0, bu = 0, in = 0, co = 0; long n = 0, n_tok = 0, n_reuse = 0; };
-    static std::map<const void *, ctx_prof_acc> g_acc;
+    static std::map<std::pair<const void *, int>, ctx_prof_acc> g_acc;
     const int64_t tp0 = ctx_prof ? ggml_time_us() : 0;
     int64_t tp1 = 0, tp2 = 0, tp3 = 0;
     const long reused0 = n_reused;
@@ -1611,11 +1612,11 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     if (ctx_prof && ubatch.n_tokens <= 8) {
-        auto & a = g_acc[this];
+        auto & a = g_acc[{ (const void *) this, ubatch.n_tokens > 1 ? 2 : 1 }];
         a.ap += (tp1 - tp0) / 1000.0; a.bu += (tp2 - tp1) / 1000.0; a.in += (tp3 - tp2) / 1000.0; a.co += (ggml_time_us() - tp3) / 1000.0;
         a.n++; a.n_tok += ubatch.n_tokens; a.n_reuse += (n_reused - reused0);
         if (a.n % 32 == 0) {
-            fprintf(stderr, "CTXPROF ctx=%p n=%ld avg_tokens=%.2f reuse=%.2f | apply=%.3f build_or_reuse=%.3f set_inputs=%.3f compute_submit=%.3f ms\n", (const void *) this, a.n, (double) a.n_tok / a.n, (double) a.n_reuse / a.n, a.ap / a.n, a.bu / a.n, a.in / a.n, a.co / a.n);
+            fprintf(stderr, "CTXPROF ctx=%p batch=%s n=%ld avg_tokens=%.2f reuse=%.2f | apply=%.3f build_or_reuse=%.3f set_inputs=%.3f compute_submit=%.3f ms\n", (const void *) this, ubatch.n_tokens > 1 ? "multi" : "single", a.n, (double) a.n_tok / a.n, (double) a.n_reuse / a.n, a.ap / a.n, a.bu / a.n, a.in / a.n, a.co / a.n);
         }
     }
 
