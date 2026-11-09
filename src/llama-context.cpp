@@ -1616,7 +1616,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         a.ap += (tp1 - tp0) / 1000.0; a.bu += (tp2 - tp1) / 1000.0; a.in += (tp3 - tp2) / 1000.0; a.co += (ggml_time_us() - tp3) / 1000.0;
         a.n++; a.n_tok += ubatch.n_tokens; a.n_reuse += (n_reused - reused0);
         if (a.n % 32 == 0) {
-            fprintf(stderr, "CTXPROF ctx=%p batch=%s n=%ld avg_tokens=%.2f reuse=%.2f | apply=%.3f build_or_reuse=%.3f set_inputs=%.3f compute_submit=%.3f ms\n", (const void *) this, ubatch.n_tokens > 1 ? "multi" : "single", a.n, (double) a.n_tok / a.n, (double) a.n_reuse / a.n, a.ap / a.n, a.bu / a.n, a.in / a.n, a.co / a.n);
+            fprintf(stderr, "CTXPROF ctx=%p batch=%s splits=%d n=%ld avg_tokens=%.2f reuse=%.2f | apply=%.3f build_or_reuse=%.3f set_inputs=%.3f compute_submit=%.3f ms\n", (const void *) this, ubatch.n_tokens > 1 ? "multi" : "single", ggml_backend_sched_get_n_splits(sched.get()), a.n, (double) a.n_tok / a.n, (double) a.n_reuse / a.n, a.ap / a.n, a.bu / a.n, a.in / a.n, a.co / a.n);
         }
     }
 

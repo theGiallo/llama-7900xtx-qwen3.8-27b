@@ -73,6 +73,7 @@
 #include "ggml-cuda/top-k-mask.cuh"
 #include "ggml.h"
 
+#include <tuple>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -2786,6 +2787,19 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
     ggml_backend_buffer_t buf_src = src->view_src ? src->view_src->buffer : src->buffer;
     ggml_backend_buffer_t buf_dst = dst->view_src ? dst->view_src->buffer : dst->buffer;
 
+    // GGML_SCHED_ASYNC_INPUT: pinned host buffer (graph inputs) -> device buffer as an asynchronous copy on the destination stream
+    // (the scheduler otherwise does a blocking copy per input, ~0.1 ms each on Windows)
+    if (!ggml_backend_is_cuda(backend_src) && ggml_backend_is_cuda(backend_dst) && buf_src && buf_dst &&
+        buf_src->buft->iface.get_name != nullptr && ggml_backend_buft_is_cuda_host(buf_src->buft) && ggml_backend_buffer_is_cuda(buf_dst)) {
+        ggml_backend_cuda_context * cuda_ctx_dst = (ggml_backend_cuda_context *) backend_dst->context;
+        ggml_backend_cuda_buffer_context * buf_ctx_dst = (ggml_backend_cuda_buffer_context *) buf_dst->context;
+        if (cuda_ctx_dst->device != buf_ctx_dst->device) {
+            return false;
+        }
+        CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, ggml_nbytes(dst), cudaMemcpyHostToDevice, cuda_ctx_dst->stream()));
+        return true;
+    }
+
     if (!ggml_backend_is_cuda(backend_src) || !ggml_backend_is_cuda(backend_dst)) {
         return false;
     }
@@ -5228,7 +5242,19 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
         CUDA_CHECK(cudaStreamBeginCapture(cuda_ctx->stream(), cudaStreamCaptureModeRelaxed));
     }
 
+    const int64_t t_gc0 = g_op_prof.gstats ? ggml_time_us() : 0;
     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
+    if (g_op_prof.gstats) {
+        static std::map<std::tuple<int, int, int>, std::pair<double, long>> g_gtime;
+        auto & e = g_gtime[{cgraph->n_nodes, use_cuda_graph ? 1 : 0, cuda_graph_update_required ? 1 : 0}];
+        e.first += (ggml_time_us() - t_gc0) / 1000.0; e.second++;
+        static long n_prints = 0;
+        if (++n_prints % 300 == 0) {
+            for (auto & [k, v] : g_gtime) {
+                fprintf(stderr, "GRAPHTIME n_nodes=%d %s%s calls=%ld avg_host_ms=%.3f\n", std::get<0>(k), std::get<1>(k) ? "replay" : "eager", std::get<2>(k) ? "+capture" : "", v.second, v.first / v.second);
+            }
+        }
+    }
 
     return GGML_STATUS_SUCCESS;
 }
