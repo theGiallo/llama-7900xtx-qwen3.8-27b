@@ -1998,7 +1998,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                             common_token_to_piece(ctx_dft, cur_p->data[k].id).c_str());
                 }
 
-                if (dprof) { t_proc += (ts0 - tp0) / 1000.0; t_samp += (ggml_time_us() - ts0) / 1000.0; if (++n_st % 64 == 0) fprintf(stderr, "DRAFTSTEP steps=%ld avg_process_ms=%.2f avg_sample_ms=%.2f\n", n_st, t_proc / n_st, t_samp / n_st); }
+                if (dprof) { t_proc += (ts0 - tp0) / 1000.0; t_samp += (ggml_time_us() - ts0) / 1000.0; if (++n_st % 8 == 0) fprintf(stderr, "DRAFTSTEP steps=%ld avg_process_ms=%.2f avg_sample_ms=%.2f\n", n_st, t_proc / n_st, t_samp / n_st); }
                 // add drafted token for each sequence
                 const llama_token id = dparams.at(seq_id).result_q ? id_sampled : cur_p->data[0].id;
 

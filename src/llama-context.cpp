@@ -14,6 +14,7 @@
 #include "llama-sampler.h"
 #include "llama.h"
 
+#include <map>
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
@@ -1527,11 +1528,20 @@ bool llama_context::set_adapter_cvec(
 }
 
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
+    // LLAMA_CTX_PROF=1: average host time per phase of process_ubatch for small batches (apply / reuse-or-build / set_inputs / compute submit), printed every 32 calls per context
+    static const bool ctx_prof = getenv("LLAMA_CTX_PROF") != nullptr;
+    struct ctx_prof_acc { double ap = 0, bu = 0, in = 0, co = 0; long n = 0, n_tok = 0, n_reuse = 0; };
+    static std::map<const void *, ctx_prof_acc> g_acc;
+    const int64_t tp0 = ctx_prof ? ggml_time_us() : 0;
+    int64_t tp1 = 0, tp2 = 0, tp3 = 0;
+    const long reused0 = n_reused;
     if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
         return nullptr;
     }
+
+    if (ctx_prof) { tp1 = ggml_time_us(); }
 
     auto * res = get_gf_res_prev();
     auto * gf  = res->get_gf();
@@ -1579,6 +1589,8 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         gf_res_prev_active = res;
     }
 
+    if (ctx_prof) { tp2 = ggml_time_us(); }
+
     // set the input data for the input tensors
     {
         //const auto t_start_us = ggml_time_us();
@@ -1589,11 +1601,22 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
 
+    if (ctx_prof) { tp3 = ggml_time_us(); }
+
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
         return nullptr;
+    }
+
+    if (ctx_prof && ubatch.n_tokens <= 8) {
+        auto & a = g_acc[this];
+        a.ap += (tp1 - tp0) / 1000.0; a.bu += (tp2 - tp1) / 1000.0; a.in += (tp3 - tp2) / 1000.0; a.co += (ggml_time_us() - tp3) / 1000.0;
+        a.n++; a.n_tok += ubatch.n_tokens; a.n_reuse += (n_reused - reused0);
+        if (a.n % 32 == 0) {
+            fprintf(stderr, "CTXPROF ctx=%p n=%ld avg_tokens=%.2f reuse=%.2f | apply=%.3f build_or_reuse=%.3f set_inputs=%.3f compute_submit=%.3f ms\n", (const void *) this, a.n, (double) a.n_tok / a.n, (double) a.n_reuse / a.n, a.ap / a.n, a.bu / a.n, a.in / a.n, a.co / a.n);
+        }
     }
 
     ret = GGML_STATUS_SUCCESS;
