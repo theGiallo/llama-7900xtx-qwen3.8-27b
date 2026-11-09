@@ -288,29 +288,40 @@ static __global__ void flash_attn_wdec_q4(
 
         // ---- V: dequantize into the transposed tile Vt[d][t]
         {
-            const int t  = tid & 31;
-            const int g0 = tid >> 5;
+            // each thread dequantizes two adjacent KV rows (t0, t0+1) of 4 groups of 8 dims and writes the pair as one half2 per dim
+            // (half of the LDS store instructions of the scalar version); lanes 16..31 take the odd dim pairs of the group so that the
+            // two lane halves do not hit the same banks
+            const int t0   = 2*(tid & 15);
+            const int gs   = tid >> 4;               // 0..15
+            const int pset = gs & 1;                 // dim pairs p = pset, pset + 2 of each group
 #pragma unroll
             for (int gi = 0; gi < 4; ++gi) {
-                const int grp = g0 + 8*gi;           // 8 dims per group
+                const int grp = (gs >> 1) + 8*gi;    // 8 dims per group
                 const int e0  = grp*8;
                 const int ub  = e0 >> 5;
                 const int o   = e0 & 31;
-                const char * blk = raw + t*RAWS + ub*18;
-                const half dv = *(const half *) blk;
-                const half2 dv2 = __half2half2(dv);
-                const uint16_t * qp = (const uint16_t *) (blk + 2 + (o < 16 ? o : o - 16));
+                const char * blk0 = raw + t0*RAWS + ub*18;
+                const char * blk1 = blk0 + RAWS;
+                const half2 dv0 = __half2half2(*(const half *) blk0);
+                const half2 dv1 = __half2half2(*(const half *) blk1);
+                const uint16_t * qp0 = (const uint16_t *) (blk0 + 2 + (o < 16 ? o : o - 16));
+                const uint16_t * qp1 = (const uint16_t *) (blk1 + 2 + (o < 16 ? o : o - 16));
 #pragma unroll
-                for (int p = 0; p < 4; ++p) {
-                    uint32_t wv = qp[p];
+                for (int pp = 0; pp < 2; ++pp) {
+                    const int p = pset + 2*pp;
+                    uint32_t w0 = qp0[p];
+                    uint32_t w1 = qp1[p];
                     if (o >= 16) {
-                        wv >>= 4;
+                        w0 >>= 4;
+                        w1 >>= 4;
                     }
-                    const uint32_t x = ((wv & 0x000Fu) | ((wv & 0x0F00u) << 8)) | 0x64006400u;
-                    half2 h = wdec_u32_to_half2(x) - make_half2(__ushort_as_half(0x6408), __ushort_as_half(0x6408));
-                    h = h*dv2;
-                    Vt[(e0 + 2*p)*VS + t]     = __low2half(h);
-                    Vt[(e0 + 2*p + 1)*VS + t] = __high2half(h);
+                    const uint32_t x0 = ((w0 & 0x000Fu) | ((w0 & 0x0F00u) << 8)) | 0x64006400u;
+                    const uint32_t x1 = ((w1 & 0x000Fu) | ((w1 & 0x0F00u) << 8)) | 0x64006400u;
+                    const half2 c = make_half2(__ushort_as_half(0x6408), __ushort_as_half(0x6408));
+                    const half2 h0 = (wdec_u32_to_half2(x0) - c)*dv0;   // row t0:   dims e0+2p, e0+2p+1
+                    const half2 h1 = (wdec_u32_to_half2(x1) - c)*dv1;   // row t0+1
+                    *(half2 *) &Vt[(e0 + 2*p)*VS + t0]     = make_half2(__low2half(h0),  __low2half(h1));
+                    *(half2 *) &Vt[(e0 + 2*p + 1)*VS + t0] = make_half2(__high2half(h0), __high2half(h1));
                 }
             }
         }
