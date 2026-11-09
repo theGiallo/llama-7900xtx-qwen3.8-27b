@@ -649,9 +649,13 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cur = build_norm(cur, head_norm_w, nullptr, LLM_NORM_RMS, -1);
 
     cb(cur, "h_nextn", -1);
-    res->t_h_nextn = cur;
 
-    cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+    // the draft context captures the nextn hidden state masked (output rows only): crop it with the same rows as the logits. Capturing the full
+    // tensor made the masked read return the FIRST n_outputs rows of the batch, which are the wrong ones whenever a multi-token batch has its
+    // output on a later row (the deferred MTP catch-up merges the accepted pairs with the first draft step).
+    ggml_tensor * h_full = cur;
+    cur = ggml_get_rows(ctx0, h_full, inp_out_ids);
+    res->t_h_nextn = cparams.embeddings_nextn_masked ? cur : h_full;
     cb(cur, "mtp_shared_head_norm", -1);
 
     ggml_tensor * head_w = layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output;

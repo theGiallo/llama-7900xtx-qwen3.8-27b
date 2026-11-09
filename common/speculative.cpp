@@ -1527,7 +1527,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     std::vector<std::vector<float>> verify_h;
     std::vector<int32_t> verify_h_rows;
 
-    // Deferred catch-up (GGML_SPEC_MTP_MERGE=1, default OFF: with the merged decode the first draft step is less accurate, see bench/decode_kernel/HYPOTHESES_2026-11-09.md H11; 3 = accepted pairs as a separate batch, identical to the eager path; single seq, single head): after a verify batch process() only stashes the
+    // Deferred catch-up (GGML_SPEC_MTP_MERGE, default ON, 0 = eager catch-up in process(); 3 = accepted pairs as a separate batch; needs the masked nextn crop in the MTP graph, see bench/decode_kernel/HYPOTHESES_2026-11-09.md H11; single seq, single head): after a verify batch process() only stashes the
     // (token, position, target hidden row) pairs. Once accept() has reported how many drafted tokens the target kept, draft() decodes
     // the accepted pairs together with the first draft step: one head pass instead of two, and the rejected positions are never decoded.
     bool                    merge_enabled = false;
@@ -1638,7 +1638,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         {
             const char * e = getenv("GGML_SPEC_MTP_MERGE");
-            merge_enabled = (e != nullptr && atoi(e) != 0) && n_seq == 1 && !is_mem_shared && !chain_heads && n_mtp_layers == 1;
+            merge_enabled = (e == nullptr || atoi(e) != 0) && n_seq == 1 && !is_mem_shared && !chain_heads && n_mtp_layers == 1;
         }
 
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
@@ -1668,6 +1668,10 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     void begin(llama_seq_id seq_id, const llama_tokens & prompt) override {
         // reset here rather than per round, or two identical requests differ
         common_sampler_reset(smpls[seq_id].get());
+
+        if (seq_id == st_seq) {
+            st_ids.clear(); st_pos.clear(); st_h.clear(); st_seq = -1; st_accepted = false; st_n_acc = 0; // new generation: the deferred catch-up is stale
+        }
 
         const int32_t N = (int32_t) prompt.size();
         if (N <= 0) {
@@ -1699,9 +1703,15 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         // a stash that draft() did not consume: keep its accepted prefix in the head KV, drop a verify batch whose acceptance never arrived (checkpoint restore)
         if (!st_ids.empty()) {
-            // no acceptance reported (another drafter produced the draft): decode the whole stash, as the eager path would have
-            if (!flush_stash(st_accepted ? (size_t) st_n_acc + 1 : st_ids.size())) {
-                return false;
+            // a batch that does not continue the stashed positions starts a new generation (the slot was reused): the stash is stale, drop it
+            const size_t n_use = st_accepted ? std::min((size_t) st_n_acc + 1, st_ids.size()) : st_ids.size();
+            if (batch_in.tokens[0].pos[0] > st_pos[n_use - 1]) {
+                // no acceptance reported (another drafter produced the draft): decode the whole stash, as the eager path would have
+                if (!flush_stash(n_use)) {
+                    return false;
+                }
+            } else {
+                st_ids.clear(); st_pos.clear(); st_h.clear(); st_seq = -1; st_accepted = false; st_n_acc = 0;
             }
         }
 
@@ -1980,6 +1990,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 const float * h_row = llama_get_embeddings_nextn_ith(ctx_dft, i_last[seq_id]);
 
                 const auto * cur_p = common_sampler_get_candidates(smpl, true);
+                { static const bool tr = getenv("SPEC_MTP_TRACE") != nullptr; if (tr) { fprintf(stderr, "MTPTRACE step=%d pos0=%d id_last=%d n_in_batch=%d top=%d p=%.4f\n", i, (int) dparams[seq_id].pos0, (int) dparams[seq_id].id_last, (int) batch.size(), (int) cur_p->data[0].id, cur_p->data[0].p); } }
 
                 for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
                     SPC_DBG(" - seq_id %d, draft candidate %3d, pos %3d: %6d (%8.3f) '%s'\n",
