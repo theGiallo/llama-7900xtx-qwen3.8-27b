@@ -10,7 +10,13 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 #include <map>
+#include <thread>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -1527,6 +1533,94 @@ void llama_kv_cache::set_input_k_shift(ggml_tensor * dst) const {
     }
 }
 
+// LLAMA_KQ_MT=0 disables; the first KQ mask row of a long context (n_kv >= LLAMA_KQ_MT_MIN, default 32768) is built by a small spinning thread pool
+namespace {
+struct kq_pool {
+    std::vector<std::thread> workers;
+    std::atomic<int> epoch{0};
+    std::atomic<int> next{0};
+    std::atomic<int> done{0};
+    std::atomic<bool> stop{false};
+    std::mutex m;
+    std::condition_variable cv;
+    int n_chunks = 0;
+    const std::function<void(int)> * fn = nullptr;
+
+    explicit kq_pool(int n) {
+        for (int i = 0; i < n; ++i) {
+            workers.emplace_back([this]() {
+                int seen = 0;
+                auto t_last = std::chrono::steady_clock::now();
+                while (!stop.load(std::memory_order_acquire)) {
+                    const int e = epoch.load(std::memory_order_acquire);
+                    if (e == seen) {
+                        // spin (yield) for 20 ms after the last job (the decode calls of one round come a few ms apart), then block so an idle server burns no CPU
+                        if (std::chrono::steady_clock::now() - t_last > std::chrono::milliseconds(20)) {
+                            std::unique_lock<std::mutex> lk(m);
+                            cv.wait_for(lk, std::chrono::milliseconds(200), [&]() { return epoch.load() != seen || stop.load(); });
+                        } else {
+                            std::this_thread::yield();
+                        }
+                        continue;
+                    }
+                    seen = e;
+                    t_last = std::chrono::steady_clock::now();
+                    for (;;) {
+                        const int c = next.fetch_add(1, std::memory_order_acq_rel);
+                        if (c >= n_chunks) {
+                            break;
+                        }
+                        (*fn)(c);
+                        done.fetch_add(1, std::memory_order_acq_rel);
+                    }
+                }
+            });
+        }
+    }
+    ~kq_pool() {
+        stop.store(true, std::memory_order_release);
+        for (auto & t : workers) {
+            t.join();
+        }
+    }
+    // runs fn(0..n-1) on the workers and the caller, returns when all are done
+    void run(int n, const std::function<void(int)> & f) {
+        fn = &f;
+        n_chunks = n;
+        next.store(0, std::memory_order_release);
+        done.store(0, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lk(m);
+            epoch.fetch_add(1, std::memory_order_acq_rel);
+        }
+        cv.notify_all();
+        for (;;) {
+            const int c = next.fetch_add(1, std::memory_order_acq_rel);
+            if (c >= n) {
+                break;
+            }
+            f(c);
+            done.fetch_add(1, std::memory_order_acq_rel);
+        }
+        while (done.load(std::memory_order_acquire) < n) {
+            std::this_thread::yield();
+        }
+    }
+};
+
+static kq_pool * kq_get_pool() {
+    static const int n_threads = []() {
+        const char * e = getenv("LLAMA_KQ_MT");
+        if (e && atoi(e) == 0) {
+            return 0;
+        }
+        return 3;
+    }();
+    static kq_pool * pool = n_threads > 0 ? new kq_pool(n_threads) : nullptr; // intentionally leaked: workers spin until process exit
+    return pool;
+}
+} // namespace
+
 struct args_set_input_kq_mask {
     const llama_hparams & hparams;
     const llama_ubatch  * ubatch;
@@ -1615,6 +1709,42 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
                     idxs.reserve(ubatch->n_tokens + n_swa + 32);
 
                     seq_srct[seq_id] = i;
+                }
+            }
+
+            // long context, first token of the sequence, plain causal mask: build the row in parallel (same result as the loop below)
+            if constexpr (!alibi && !swa && causal) {
+                static const int mt_min = getenv("LLAMA_KQ_MT_MIN") ? atoi(getenv("LLAMA_KQ_MT_MIN")) : 32768;
+                kq_pool * pool = (!prev && n_kv >= mt_min) ? kq_get_pool() : nullptr;
+                if (pool) {
+                    constexpr int NCH = 4;
+                    std::vector<uint32_t> part_idxs[NCH];
+                    const std::function<void(int)> job = [&](int c) {
+                        const uint32_t j0 = (uint32_t) (n_kv*c/NCH), j1 = (uint32_t) (n_kv*(c + 1)/NCH);
+                        auto & out = part_idxs[c];
+                        out.reserve(64);
+                        for (uint32_t j = j0; j < j1; ++j) {
+                            bool keep = false;
+                            if (!cells.is_empty(j) && cells.seq_has(j, seq_id)) {
+                                const llama_pos pj = cells.pos_get(j);
+                                if (pj + (int32_t) (n_swa + 32) >= seq_pos_min[seq_id]) {
+                                    out.push_back(j);
+                                }
+                                keep = pj <= p1;
+                                if constexpr (is_2d) {
+                                    if (keep && pj == p1 && cells.ext_get(j).is_2d_gt(p1_x, p1_y)) {
+                                        keep = false;
+                                    }
+                                }
+                            }
+                            data[idst + j] = keep ? mask_keep : mask_drop;
+                        }
+                    };
+                    pool->run(NCH, job);
+                    for (int c = 0; c < NCH; ++c) {
+                        idxs.insert(idxs.end(), part_idxs[c].begin(), part_idxs[c].end());
+                    }
+                    continue;
                 }
             }
 
