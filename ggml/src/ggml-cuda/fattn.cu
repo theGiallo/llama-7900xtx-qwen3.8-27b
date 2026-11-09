@@ -771,7 +771,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
     // 2026-11-08: WMMA verify kernel for several query columns that share the same q4_0 K/V
     if (amd_wmma_available(cc) && gqa_opt_applies && ggml_cuda_flash_attn_ext_wdec_supported(dst)) {
-        static const bool s_wdec = [] { const char * e = getenv("GGML_CUDA_FATTN_WDEC"); return e != nullptr && atoi(e) != 0; }();
+        static const bool s_wdec = [] { const char * e = getenv("GGML_CUDA_FATTN_WDEC"); return e == nullptr || atoi(e) != 0; }();
         static const int  s_wdec_min = [] { const char * e = getenv("GGML_CUDA_FATTN_WDEC_MIN"); return e ? atoi(e) : 3; }();
         if (s_wdec && Q->ne[1] >= s_wdec_min) {
             return BEST_FATTN_KERNEL_WDEC;
