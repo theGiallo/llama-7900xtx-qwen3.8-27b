@@ -208,6 +208,12 @@ struct common_speculative_impl {
 
     virtual bool process(const common_batch & batch) = 0;
 
+    // set by the server right before process() when the batch is a speculative verify batch (its acceptance is reported through accept() before the next draft())
+    bool verify_hint = false;
+
+    // the server restored a checkpoint instead of accepting: forget work deferred from the discarded verify batch
+    virtual void drop_deferred() {}
+
     virtual void draft(common_speculative_draft_params_vec & dparams) = 0;
 
     virtual void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) = 0;
@@ -1521,6 +1527,41 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     std::vector<std::vector<float>> verify_h;
     std::vector<int32_t> verify_h_rows;
 
+    // Deferred catch-up (GGML_SPEC_MTP_MERGE=1, default OFF: with the merged decode the first draft step is less accurate, see bench/decode_kernel/HYPOTHESES_2026-11-09.md H11; 3 = accepted pairs as a separate batch, identical to the eager path; single seq, single head): after a verify batch process() only stashes the
+    // (token, position, target hidden row) pairs. Once accept() has reported how many drafted tokens the target kept, draft() decodes
+    // the accepted pairs together with the first draft step: one head pass instead of two, and the rejected positions are never decoded.
+    bool                    merge_enabled = false;
+    bool                    merge_out = getenv("GGML_SPEC_MTP_MERGE") && atoi(getenv("GGML_SPEC_MTP_MERGE")) == 4; // debug: all merged rows are outputs
+    bool                    merge_sep = getenv("GGML_SPEC_MTP_MERGE") && atoi(getenv("GGML_SPEC_MTP_MERGE")) == 3; // debug: decode the accepted pairs as a separate batch
+    bool                    merge_all = getenv("GGML_SPEC_MTP_MERGE") && atoi(getenv("GGML_SPEC_MTP_MERGE")) == 2; // debug: decode the rejected pairs too
+    std::vector<llama_token> st_ids;
+    std::vector<llama_pos>   st_pos;
+    std::vector<float>       st_h;           // [n][n_embd]
+    llama_seq_id             st_seq = -1;
+    bool                     st_accepted = false;
+    int32_t                  st_n_acc = 0;
+
+    // decode the first n_use stashed pairs now (no outputs) and clear the stash
+    bool flush_stash(size_t n_use) {
+        const size_t n = std::min(n_use, st_ids.size());
+        bool ok = true;
+        if (n > 0) {
+            batch.clear();
+            const size_t row_bytes = (size_t) n_embd * sizeof(float);
+            for (size_t k = 0; k < n; ++k) {
+                const int32_t idx = batch.add(st_ids[k], st_pos[k], st_seq, false);
+                batch.set_embd_state(idx, { st_h.data() + k * (size_t) n_embd, 1, (size_t) n_embd });
+            }
+            ok = llama_process(params.ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch.get()) == 0;
+            if (!ok) {
+                SPC_ERR("%s", "llama_process(ctx_dft) failed in the deferred MTP catch-up\n");
+            }
+        }
+        st_ids.clear(); st_pos.clear(); st_h.clear();
+        st_seq = -1; st_accepted = false; st_n_acc = 0;
+        return ok;
+    }
+
     std::vector<int>                i_last;
     std::vector<std::vector<float>> chain_h;
 
@@ -1595,6 +1636,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         }
         this->n_max = this->params.n_max;
 
+        {
+            const char * e = getenv("GGML_SPEC_MTP_MERGE");
+            merge_enabled = (e != nullptr && atoi(e) != 0) && n_seq == 1 && !is_mem_shared && !chain_heads && n_mtp_layers == 1;
+        }
+
         pending_h.assign(n_seq, std::vector<float>(n_embd, 0.0f));
 
         i_last.assign(n_seq, -1);
@@ -1650,6 +1696,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         }
 
         const int32_t n_tokens = batch_in.size();
+
+        // a stash that draft() did not consume: keep its accepted prefix in the head KV, drop a verify batch whose acceptance never arrived (checkpoint restore)
+        if (!st_ids.empty()) {
+            // no acceptance reported (another drafter produced the draft): decode the whole stash, as the eager path would have
+            if (!flush_stash(st_accepted ? (size_t) st_n_acc + 1 : st_ids.size())) {
+                return false;
+            }
+        }
 
         // remember the first and last batch index for each sequence
         std::fill(i_batch_beg.begin(), i_batch_beg.end(), -1);
@@ -1719,8 +1773,25 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 }
             }
 
+            // deferred catch-up: stash the (token, pos, h row) pairs of a verify batch, decode only the accepted ones later in draft()
+            bool defer = merge_enabled && verify_hint && n_tokens > 0 && n_tokens <= 8 && i_batch_beg[0] == 0 && i_batch_end[0] == n_tokens - 1;
+            for (int k = 0; defer && k < n_tokens; ++k) {
+                defer = batch_in.tokens[k].id != LLAMA_TOKEN_NULL && batch_in.tokens[k].seq_id == 0;
+            }
+            if (defer) {
+                const float * h_tgt_d = llama_get_embeddings_nextn(ctx_tgt);
+                st_ids.resize(n_tokens); st_pos.resize(n_tokens); st_h.resize((size_t) n_tokens * n_embd);
+                for (int k = 0; k < n_tokens; ++k) {
+                    st_ids[k] = batch_in.tokens[k].id;
+                    st_pos[k] = batch_in.tokens[k].pos[0];
+                    const float * h_row = k == 0 ? pending_h[0].data() : h_tgt_d + (size_t) (k - 1) * n_embd;
+                    std::memcpy(st_h.data() + (size_t) k * n_embd, h_row, row_bytes);
+                }
+                st_seq = 0; st_accepted = false; st_n_acc = 0;
+            }
+
             bool ok = true;
-            for (int head = 0; head < n_mtp_layers; ++head) {
+            for (int head = 0; head < (defer ? 0 : n_mtp_layers); ++head) {
                 if (chain_heads) {
                     // ref: https://github.com/ggml-org/llama.cpp/pull/24340/changes#r3413498544
                     for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
@@ -1786,13 +1857,39 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     verify_h[seq_id].data() + (size_t) (n_rows - 1) * n_embd, row_bytes);
         }
 
+        verify_hint = false;
         return true;
+    }
+
+    void drop_deferred() override {
+        st_ids.clear(); st_pos.clear(); st_h.clear(); st_seq = -1; st_accepted = false; st_n_acc = 0;
     }
 
     void draft(common_speculative_draft_params_vec & dparams) override {
         auto & ctx_dft = params.ctx_dft;
 
+        // deferred catch-up: merge the accepted pairs of the last verify batch into the first draft step, otherwise decode the stash now
+        size_t n_merge = 0;
+        if (!st_ids.empty()) {
+            if (st_accepted && st_seq >= 0 && st_seq < (llama_seq_id) dparams.size() && dparams[st_seq].drafting) {
+                if (merge_sep) {
+                    if (!flush_stash((size_t) st_n_acc + 1)) {
+                        SPC_ERR("%s", "deferred MTP catch-up failed\n");
+                    }
+                } else {
+                    n_merge = merge_all ? st_ids.size() : std::min((size_t) st_n_acc + 1, st_ids.size());
+                }
+            } else if (!flush_stash(st_accepted ? (size_t) st_n_acc + 1 : st_ids.size())) {
+                SPC_ERR("%s", "deferred MTP catch-up failed\n");
+            }
+        }
+
         batch.clear();
+
+        for (size_t k = 0; k < n_merge; ++k) {
+            const int32_t idx = batch.add(st_ids[k], st_pos[k], st_seq, merge_out);
+            batch.set_embd_state(idx, { st_h.data() + k * (size_t) n_embd, 1, (size_t) n_embd });
+        }
 
         // keep track of which sequences are still drafting
         int n_drafting = 0;
@@ -1858,6 +1955,12 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             if (ret != 0) {
                 SPC_ERR("llama_process[%d] returned %d\n", i, ret);
                 break;
+            }
+
+            // the merged catch-up pairs have been decoded together with the first draft step
+            if (n_merge > 0) {
+                st_ids.clear(); st_pos.clear(); st_h.clear(); st_seq = -1; st_accepted = false; st_n_acc = 0;
+                n_merge = 0;
             }
 
             // rebuild the batch for the next step: the growing-KV paths re-add only the
@@ -1963,6 +2066,11 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     void accept(llama_seq_id seq_id, uint16_t n_accepted, bool /*is_other*/) override {
         if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
             return;
+        }
+
+        if (!st_ids.empty() && seq_id == st_seq) {
+            st_accepted = true;
+            st_n_acc    = n_accepted;
         }
 
         const int32_t n_rows = verify_h_rows[seq_id];
@@ -3009,6 +3117,24 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
         common_time_meas tm(impl->t_begin_us, !impl->gen_perf);
         impl->begin(seq_id, prompt);
         impl->n_call_begin++;
+    }
+}
+
+void common_speculative_drop_deferred(common_speculative * spec) {
+    if (spec == nullptr) {
+        return;
+    }
+    for (auto & impl : spec->impls) {
+        impl->drop_deferred();
+    }
+}
+
+void common_speculative_set_verify_hint(common_speculative * spec, bool verify) {
+    if (spec == nullptr) {
+        return;
+    }
+    for (auto & impl : spec->impls) {
+        impl->verify_hint = verify;
     }
 }
 

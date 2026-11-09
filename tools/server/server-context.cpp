@@ -47,6 +47,7 @@
 struct server_spec_prof {
     bool enabled = getenv("SERVER_SPEC_PROF") != nullptr;
     double t_draft = 0, t_decode = 0, t_period = 0;
+    double t_clone = 0, t_sample = 0, t_rest = 0, t_pre = 0;   // t_pre: end of the verify decode until the verify handler starts   // verify bookkeeping: sampler clone, sample_and_accept_n, everything after (prompt tokens, seq_rm, detokenize, send)
     long   n_tok = 0;
     int    n = 0;
     bool   have_last = false, drafted_this_round = false;
@@ -4722,9 +4723,9 @@ private:
             g_sp_prof.n++;
             if (g_sp_prof.n % 16 == 0) {
                 const double n = (double) g_sp_prof.n;
-                fprintf(stderr, "SPECPROF rounds=%d avg_verify_cols=%.2f | per round ms: draft=%.2f verify_decode=%.2f gap_between_decodes=%.2f (gap includes draft) => total=%.2f\n",
+                fprintf(stderr, "SPECPROF rounds=%d avg_verify_cols=%.2f | per round ms: draft=%.2f verify_decode=%.2f gap_between_decodes=%.2f (gap includes draft) => total=%.2f | pre=%.3f clone=%.3f sample_accept=%.3f rest=%.3f\n",
                         g_sp_prof.n, g_sp_prof.n_tok / n, g_sp_prof.t_draft / n, g_sp_prof.t_decode / n, g_sp_prof.t_period / n,
-                        (g_sp_prof.t_period + g_sp_prof.t_decode) / n);
+                        (g_sp_prof.t_period + g_sp_prof.t_decode) / n, g_sp_prof.t_pre / n, g_sp_prof.t_clone / n, g_sp_prof.t_sample / n, g_sp_prof.t_rest / n);
             }
         }
         g_sp_prof.drafted_this_round = false;
@@ -4787,6 +4788,14 @@ private:
         //       ref: https://github.com/ggml-org/llama.cpp/pull/22728#issuecomment-4400925384
         if (spec) {
             bool ok = true;
+            // a verify batch (some slot has drafted tokens in it): let the drafter defer its catch-up until the accepted count is known
+            bool is_verify = false;
+            for (auto & s : slots) {
+                if (!s.spec_i_batch.empty()) {
+                    is_verify = true;
+                }
+            }
+            common_speculative_set_verify_hint(spec.get(), is_verify);
             queue_tasks.yield_to_queue([&]() {
                 ok = common_speculative_process(spec.get(), batch.view);
             });
@@ -4954,6 +4963,10 @@ private:
                 return;
             }
 
+            if (g_sp_prof.enabled && g_sp_prof.have_last) {
+                g_sp_prof.t_pre += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - g_sp_prof.last_dec_end).count();
+            }
+
             // save the original draft size
             const size_t n_draft = slot.spec_draft.size();
 
@@ -4964,7 +4977,16 @@ private:
 
             // verify and try to accept the draft
             {
-                common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
+                // the recurrent snapshots are only guaranteed for batches of up to n_rs_seq + 1 tokens, so a longer draft uses its checkpoint
+                const bool use_ckpt_tgt =
+                    ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
+                    (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && n_draft > llama_n_rs_seq(ctx_tgt));
+
+                const auto t_c0 = std::chrono::steady_clock::now();
+                // the saved sampler is only restored together with a checkpoint, so it is only cloned (0.4 ms per round) in that case
+                common_sampler_ptr smpl_save(use_ckpt_tgt ? common_sampler_clone(slot.smpl.get()) : nullptr);
+                const auto t_c1 = std::chrono::steady_clock::now();
+                g_sp_prof.t_clone += std::chrono::duration<double, std::milli>(t_c1 - t_c0).count();
 
                 GGML_ASSERT(spec_i_batch.size() == n_draft + 1);
                 GGML_ASSERT(slot.spec_draft_q.empty() || (slot.spec_draft_q.size() == slot.spec_draft.size()));
@@ -4988,13 +5010,9 @@ private:
                 }
 
                 GGML_ASSERT(accepted.size() >= 1);
+                g_sp_prof.t_sample += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_c1).count();
 
                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
-
-                // the recurrent snapshots are only guaranteed for batches of up to n_rs_seq + 1 tokens, so a longer draft uses its checkpoint
-                const bool use_ckpt_tgt =
-                    ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
-                    (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && n_draft > llama_n_rs_seq(ctx_tgt));
 
                 // check for partial draft acceptance
                 if (n_rollback > 0) {
@@ -5006,6 +5024,8 @@ private:
                         // partial acceptance is not supported by the context -> truncate the draft and restore the state
                         slot.spec_is_replay = true;
                         slot.spec_draft = std::move(accepted);
+
+                        common_speculative_drop_deferred(spec.get()); // the drafter's deferred catch-up belongs to the discarded verify batch
 
                         const auto & ckpt = slot.spec_ckpt;
 
@@ -5035,6 +5055,7 @@ private:
                 slot.spec_draft = std::move(accepted);
             }
 
+            const auto t_r0 = std::chrono::steady_clock::now();
             const auto ids = std::move(slot.spec_draft);
 
             size_t n_accepted = ids.size() - 1;
@@ -5090,6 +5111,7 @@ private:
             }
 
             slot.print_timings_tg();
+            g_sp_prof.t_rest += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_r0).count();
 
             SLT_DBG(slot, "accepted %d/%d draft tokens, new n_tokens = %d\n", (int) n_accepted, (int) n_draft, slot.prompt.n_tokens());
         });

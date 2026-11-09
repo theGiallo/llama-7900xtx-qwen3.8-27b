@@ -86,6 +86,12 @@ common_speculative_draft_params & common_speculative_get_draft_params(common_spe
 // optionally call once at the beginning of a new generation
 void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, const llama_tokens & prompt);
 
+// tell the speculative context that the next process() call is a verify batch of drafted tokens (lets the MTP drafter defer its catch-up decode until the accepted count is known)
+void common_speculative_set_verify_hint(common_speculative * spec, bool verify);
+
+// the verify batch was discarded (checkpoint restore): forget the work the drafter deferred for it
+void common_speculative_drop_deferred(common_speculative * spec);
+
 // process the batch and update the internal state of the speculative context
 bool common_speculative_process(common_speculative * spec, const common_batch & batch);
 

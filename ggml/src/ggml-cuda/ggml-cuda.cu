@@ -2153,7 +2153,9 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_mul_mat_f(ctx, src0, src1, nullptr, dst);
         return;
     }
-    if (ggml_cuda_should_use_mmvq(src0->type, cc, ne11)) {
+    // diagnostic: GGML_CUDA_MMVQ_MAXB=N routes batches larger than N to MMQ instead of MMVQ (default: no limit)
+    static const int mmvq_maxb = getenv("GGML_CUDA_MMVQ_MAXB") ? atoi(getenv("GGML_CUDA_MMVQ_MAXB")) : 1 << 30;
+    if (ne11 <= mmvq_maxb && ggml_cuda_should_use_mmvq(src0->type, cc, ne11)) {
         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
         return;
     }
@@ -4844,6 +4846,14 @@ static bool ggml_cuda_diag_skip(const ggml_tensor * node) {
     static const int small_mm = getenv("GGML_CUDA_SKIP_SMALLMM") ? atoi(getenv("GGML_CUDA_SKIP_SMALLMM")) : 0;
     if (small_mm > 0 && node->op == GGML_OP_MUL_MAT && node->src[0]->ne[1] <= small_mm) {
         return true;
+    }
+    // GGML_CUDA_SKIP_MMTYPE=iq4_xs,q8_0: skip the (unfused) MUL_MATs whose weight has one of these types (diagnostic: attributes matmul time per weight type)
+    static const char * mm_env = getenv("GGML_CUDA_SKIP_MMTYPE");
+    if (mm_env && node->op == GGML_OP_MUL_MAT) {
+        static const std::string mm_list = std::string(",") + mm_env + ",";
+        if (mm_list.find(std::string(",") + ggml_type_name(node->src[0]->type) + ",") != std::string::npos) {
+            return true;
+        }
     }
     static const char * env = getenv("GGML_CUDA_SKIP_OPS");
     if (!env) {

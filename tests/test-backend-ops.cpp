@@ -12946,6 +12946,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // 27B UDflat per-layer matmul shapes (single matrix, bs={1,1}), 1 and 4 columns: launch/tail efficiency of the small and medium shapes in the real graph
+    for (ggml_type type_a : {GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_XS, GGML_TYPE_Q5_K, GGML_TYPE_Q8_0}) {
+        for (int bs : {1, 4}) {
+            for (auto mk : std::vector<std::pair<int64_t, int64_t>>{{6144, 5120}, {5120, 6144}, {12288, 5120}, {10240, 5120}, {5120, 10240}, {1024, 5120}}) {
+                test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, mk.first, bs, mk.second, {1, 1}, {1, 1}));
+            }
+        }
+    }
+
     // Q4_K multi-column mat-vec
     for (int64_t m : {4096, 6144, 6272, 14336}) {
         for (int bs : {1, 2, 3, 4, 8}) {
