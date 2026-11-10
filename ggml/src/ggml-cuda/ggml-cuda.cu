@@ -5128,6 +5128,19 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     sg.total_ms += ms;
                 }
                 sg.n_graphs++;
+                {   // GGML_CUDA_OP_PROF_EVERY=N: print this graph's profile every N graphs (the destructor print never runs when the server is killed)
+                    static const long every = getenv("GGML_CUDA_OP_PROF_EVERY") ? atol(getenv("GGML_CUDA_OP_PROF_EVERY")) : 0;
+                    if (every > 0 && sg.n_graphs % every == 0 && cgraph->n_nodes < 1000) {
+                        std::vector<std::pair<std::string, std::pair<double,long>>> v(sg.acc.begin(), sg.acc.end());
+                        std::sort(v.begin(), v.end(), [](auto & a, auto & b){ return a.second.first > b.second.first; });
+                        fprintf(stderr, "OPPROF ==== graph n_nodes=%d graphs=%ld total_ms_per_graph=%.3f\n", (int) cgraph->n_nodes, sg.n_graphs, sg.total_ms / sg.n_graphs);
+                        int shown = 0;
+                        for (auto & e : v) {
+                            if (shown++ >= 8) break;
+                            fprintf(stderr, "OPPROF %8.3f ms/graph %6.1f calls/graph  %s\n", e.second.first / sg.n_graphs, (double) e.second.second / sg.n_graphs, e.first.c_str());
+                        }
+                    }
+                }
             }
         }
 
