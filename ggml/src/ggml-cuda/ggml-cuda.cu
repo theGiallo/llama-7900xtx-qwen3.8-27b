@@ -6560,8 +6560,20 @@ static void ggml_backend_cuda_device_event_free(ggml_backend_dev_t dev, ggml_bac
     delete event;
 }
 
+#if defined(GGML_USE_HIP)
+#define GGML_EVQUERY hipEventQuery
+#else
+#define GGML_EVQUERY cudaEventQuery
+#endif
 static void ggml_backend_cuda_device_event_synchronize(ggml_backend_dev_t dev, ggml_backend_event_t event) {
     GGML_UNUSED(dev);
+    {
+        static const bool evq = []() { const char * e = getenv("GGML_CUDA_EVENT_QUERY"); return e == nullptr || atoi(e) != 0; }();
+        if (evq && GGML_EVQUERY((cudaEvent_t)event->context) == cudaSuccess) {
+            return;
+        }
+        (void) cudaGetLastError();
+    }
     CUDA_CHECK(cudaEventSynchronize((cudaEvent_t)event->context));
 }
 
