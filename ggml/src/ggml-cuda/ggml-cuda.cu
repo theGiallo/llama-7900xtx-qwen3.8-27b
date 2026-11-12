@@ -2783,6 +2783,64 @@ static void ggml_backend_cuda_get_tensor_2d_async(ggml_backend_t backend, const 
         data, stride_data, (const char *) tensor->data + offset, stride_tensor, size, n_copies, cudaMemcpyDeviceToHost, cuda_ctx->stream()));
 }
 
+
+// ---- H33: batched small host -> device input copies (one gather kernel instead of one cudaMemcpyAsync per input)
+#define GGML_CUDA_BATCH_MAX 8
+struct ggml_cuda_batch_args {
+    const char * src[GGML_CUDA_BATCH_MAX];
+    char *       dst[GGML_CUDA_BATCH_MAX];
+    int          n4[GGML_CUDA_BATCH_MAX];   // size in 4-byte words (sizes are rounded down; the tail goes through n1)
+    int          n1[GGML_CUDA_BATCH_MAX];   // trailing bytes
+};
+static __global__ void ggml_cuda_batch_gather(const ggml_cuda_batch_args a) {
+    const int e = blockIdx.y;
+    const int * s4 = (const int *) a.src[e];
+    int *       d4 = (int *) a.dst[e];
+    for (int i = blockIdx.x*blockDim.x + threadIdx.x; i < a.n4[e]; i += gridDim.x*blockDim.x) {
+        d4[i] = s4[i];
+    }
+    if (blockIdx.x == 0 && threadIdx.x < a.n1[e]) {
+        a.dst[e][4*a.n4[e] + threadIdx.x] = a.src[e][4*a.n4[e] + threadIdx.x];
+    }
+}
+struct ggml_cuda_batch_pending {
+    ggml_backend_cuda_context * ctx = nullptr;
+    int n = 0;
+    const char * src[GGML_CUDA_BATCH_MAX];
+    char *       dst[GGML_CUDA_BATCH_MAX];
+    size_t       nb[GGML_CUDA_BATCH_MAX];
+};
+static ggml_cuda_batch_pending g_cuda_batch;
+static void ggml_cuda_batch_flush() {
+    ggml_cuda_batch_pending & b = g_cuda_batch;
+    if (b.n == 0) {
+        return;
+    }
+    cudaStream_t st = b.ctx->stream();
+    if (b.n == 1) {
+        CUDA_CHECK(cudaMemcpyAsync(b.dst[0], b.src[0], b.nb[0], cudaMemcpyHostToDevice, st));
+    } else {
+        ggml_cuda_batch_args a;
+        memset(&a, 0, sizeof(a));
+        int maxw = 1;
+        for (int i = 0; i < b.n; ++i) {
+            a.src[i] = b.src[i]; a.dst[i] = b.dst[i];
+            a.n4[i] = (int) (b.nb[i] / 4); a.n1[i] = (int) (b.nb[i] % 4);
+            maxw = std::max(maxw, a.n4[i]);
+        }
+        const int nt = 128;
+        const int nbx = std::min((maxw + nt - 1) / nt, 64);
+        ggml_cuda_batch_gather<<<dim3(nbx, b.n, 1), nt, 0, st>>>(a);
+        CUDA_CHECK(cudaGetLastError());
+    }
+    b.n = 0;
+    b.ctx = nullptr;
+}
+static bool ggml_cuda_batch_enabled() {
+    static const bool en = []() { const char * e = getenv("GGML_CUDA_BATCH_INPUT_COPY"); return e == nullptr || atoi(e) != 0; }();
+    return en;
+}
+
 static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
     ggml_backend_buffer_t buf_src = src->view_src ? src->view_src->buffer : src->buffer;
     ggml_backend_buffer_t buf_dst = dst->view_src ? dst->view_src->buffer : dst->buffer;
@@ -2796,6 +2854,18 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
         if (cuda_ctx_dst->device != buf_ctx_dst->device) {
             return false;
         }
+        if (ggml_cuda_batch_enabled() && ggml_nbytes(dst) <= 262144) {
+            if (g_cuda_batch.n > 0 && (g_cuda_batch.ctx != cuda_ctx_dst || g_cuda_batch.n == GGML_CUDA_BATCH_MAX)) {
+                ggml_cuda_batch_flush();
+            }
+            g_cuda_batch.ctx = cuda_ctx_dst;
+            g_cuda_batch.src[g_cuda_batch.n] = (const char *) src->data;
+            g_cuda_batch.dst[g_cuda_batch.n] = (char *) dst->data;
+            g_cuda_batch.nb[g_cuda_batch.n]  = ggml_nbytes(dst);
+            g_cuda_batch.n++;
+            return true;
+        }
+        ggml_cuda_batch_flush();
         CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, ggml_nbytes(dst), cudaMemcpyHostToDevice, cuda_ctx_dst->stream()));
         return true;
     }
@@ -2856,6 +2926,7 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
 }
 
 static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
+    ggml_cuda_batch_flush();
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *)backend->context;
 
     CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
@@ -5194,6 +5265,7 @@ static bool ggml_cuda_graph_set_enabled(ggml_backend_cuda_context * cuda_ctx, co
 #endif // USE_CUDA_GRAPH
 
 static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
+    ggml_cuda_batch_flush();
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
     ggml_cuda_set_device(cuda_ctx->device);
@@ -5273,12 +5345,14 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 }
 
 static void ggml_backend_cuda_event_record(ggml_backend_t backend, ggml_backend_event_t event) {
+    ggml_cuda_batch_flush();
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *)backend->context;
 
     CUDA_CHECK(cudaEventRecord((cudaEvent_t)event->context, cuda_ctx->stream()));
 }
 
 static void ggml_backend_cuda_event_wait(ggml_backend_t backend, ggml_backend_event_t event) {
+    ggml_cuda_batch_flush();
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *)backend->context;
 
     if (ggml_backend_is_cuda(backend)) {

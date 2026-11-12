@@ -2142,7 +2142,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     // GGML_SCHED_PROF=1: host time per phase of the split loop for small graphs (prev-split sync / input copies / graph_compute_async), printed every 256 calls
     static const bool sp = getenv("GGML_SCHED_PROF") != nullptr;
     static double t_sync = 0, t_copy = 0, t_comp[2] = {0, 0}, t_all = 0; static long n_calls = 0, n_split_sum = 0;
-    double l_sync = 0, l_copy = 0, l_comp[2] = {0, 0};
+    double l_sync = 0, l_copy = 0, l_comp[2] = {0, 0}; size_t l_in_bytes = 0; int l_in_n = 0;
     const int64_t ts_all = sp ? ggml_time_us() : 0;
 
     int prev_backend_id = -1;
@@ -2190,7 +2190,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
 
         const int64_t ts2 = sp ? ggml_time_us() : 0;
-        if (sp) { l_copy += (ts2 - ts1) / 1000.0; }
+        if (sp) { l_copy += (ts2 - ts1) / 1000.0; for (int ii = 0; ii < split->n_inputs; ii++) { l_in_bytes += ggml_nbytes(split->inputs[ii]); l_in_n++; } }
         if (!sched->callback_eval) {
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
             if (ec != GGML_STATUS_SUCCESS) {
@@ -2251,6 +2251,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     }
     if (sp && small_graph && sched->n_splits <= 4) {
         t_all += (ggml_time_us() - ts_all) / 1000.0; n_calls++; n_split_sum += sched->n_splits; t_sync += l_sync; t_copy += l_copy; t_comp[0] += l_comp[0]; t_comp[1] += l_comp[1];
+        { static double sm_copy = 0, sm_all = 0, sm_cmp = 0; static long sm_n = 0, sm_in = 0; if (l_in_bytes < 200000) { sm_n++; sm_copy += l_copy; sm_all += (ggml_time_us() - ts_all) / 1000.0; sm_cmp += l_comp[1]; sm_in += l_in_n; if (sm_n % 64 == 0) fprintf(stderr, "SCHEDPROF_SMALLIN calls=%ld inputs=%.1f input_copy=%.3f compute_gpu_submit=%.3f total=%.3f ms\n", sm_n, (double) sm_in / sm_n, sm_copy / sm_n, sm_cmp / sm_n, sm_all / sm_n); } }
         if (n_calls % 32 == 0) {
             fprintf(stderr, "SCHEDPROF calls=%ld avg_splits=%.2f | prev_sync=%.3f input_copy=%.3f compute_cpu=%.3f compute_gpu=%.3f total=%.3f ms\n", n_calls, (double) n_split_sum / n_calls, t_sync / n_calls, t_copy / n_calls, t_comp[0] / n_calls, t_comp[1] / n_calls, t_all / n_calls);
         }
