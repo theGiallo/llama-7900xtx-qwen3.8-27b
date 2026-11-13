@@ -4056,6 +4056,45 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
 }
 
 // try and fuse nodes and return the number of nodes to skip
+// H42: the rollback conv-state snapshots of a GDN layer are K copies (cpy of a sliding window of conv_input into K cells); one kernel does them all
+struct conv_multi_cpy_params { const char * src[4]; char * dst[4]; int64_t ne0, ne1, ne2, src_nb1, src_nb2, dst_nb1; int n; };
+static __global__ void conv_multi_cpy_f32(conv_multi_cpy_params p) {
+    const int64_t total = p.ne0 * p.ne1 * p.ne2;
+    for (int64_t idx = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; idx < total; idx += (int64_t) gridDim.x * blockDim.x) {
+        const int64_t x = idx % p.ne0, c = (idx / p.ne0) % p.ne1, s = idx / (p.ne0 * p.ne1);
+        for (int k = 0; k < p.n; ++k) {
+            const float v = *(const float *) (p.src[k] + x * 4 + c * p.src_nb1 + s * p.src_nb2);
+            *(float *) (p.dst[k] + (x + c * p.ne0) * 4 + s * p.dst_nb1) = v;
+        }
+    }
+}
+// returns the number of extra nodes consumed (0 = no match)
+static int ggml_cuda_try_fuse_conv_cpys(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
+    static const bool en = []() { const char * e = getenv("GGML_CUDA_CONV4"); return e == nullptr || atoi(e) != 0; }();
+    if (!en || i + 9 >= cgraph->n_nodes) return 0;
+    conv_multi_cpy_params p{};
+    p.n = 4;
+    const ggml_tensor * first = cgraph->nodes[i];
+    for (int k = 0; k < 4; ++k) {
+        const ggml_tensor * c = cgraph->nodes[i + 3 * k];
+        if (c->op != GGML_OP_CPY) return 0;
+        if (k < 3 && (cgraph->nodes[i + 3 * k + 1]->op != GGML_OP_VIEW || cgraph->nodes[i + 3 * k + 2]->op != GGML_OP_VIEW)) return 0;
+        const ggml_tensor * s = c->src[0]; const ggml_tensor * d = c;   // cpy dst is the node itself (view of the cache)
+        if (s->type != GGML_TYPE_F32 || d->type != GGML_TYPE_F32 || s->nb[0] != 4 || d->nb[0] != 4 || s->ne[3] != 1 || d->ne[2] != 1 || d->ne[3] != 1) return 0;
+        if (s->ne[0] != first->src[0]->ne[0] || s->ne[1] != first->src[0]->ne[1] || s->ne[2] != first->src[0]->ne[2] || s->nb[1] != first->src[0]->nb[1] || s->nb[2] != first->src[0]->nb[2]) return 0;
+        if (s->view_src == nullptr || s->view_src != first->src[0]->view_src) return 0;
+        if (d->ne[0] != s->ne[0] * s->ne[1] || d->ne[1] != s->ne[2]) return 0;
+        if (k > 0 && d->nb[1] != first->nb[1]) return 0;
+        p.src[k] = (const char *) s->data; p.dst[k] = (char *) d->data;
+    }
+    const ggml_tensor * s0 = first->src[0];
+    p.ne0 = s0->ne[0]; p.ne1 = s0->ne[1]; p.ne2 = s0->ne[2]; p.src_nb1 = s0->nb[1]; p.src_nb2 = s0->nb[2]; p.dst_nb1 = first->nb[1];
+    const int64_t total = p.ne0 * p.ne1 * p.ne2;
+    const int blocks = (int) std::min<int64_t>((total + 255) / 256, 1024);
+    conv_multi_cpy_f32<<<blocks, 256, 0, cuda_ctx->stream()>>>(p);
+    return 9;
+}
+
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
     if (ggml_cuda_fusion_disabled()) {
@@ -4063,6 +4102,7 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     }
 
     ggml_tensor * node = cgraph->nodes[i];
+if (node->op == GGML_OP_CPY) { const int r = ggml_cuda_try_fuse_conv_cpys(cuda_ctx, cgraph, i); if (r) return r; }
 
     if (node->op == GGML_OP_MUL_MAT_ID && cuda_ctx->stream_context().concurrent_events.empty() &&
             ggml_cuda_match_shared_expert(cgraph, i, i + 3) &&
