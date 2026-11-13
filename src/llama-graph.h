@@ -1099,6 +1099,9 @@ struct llm_graph_context {
     llm_graph_result * res;
 
     ggml_context * ctx0 = nullptr;
+    // H52: the rollback slot order (K-1 .. 0) of the conv state store is the same for every layer of one graph: build it once (LLAMA_SLOT_SHARE=0 builds one per layer as upstream does)
+    mutable ggml_tensor * s_slot_rev_shared = nullptr;
+    mutable int64_t       s_slot_rev_shared_K = -1;
     ggml_cgraph  * gf   = nullptr;
 
     llm_graph_context(const llm_graph_params & params);
