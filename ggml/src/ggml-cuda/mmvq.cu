@@ -1475,6 +1475,25 @@ static void mul_mat_vec_q_switch_type(
     }
 }
 
+// One cache per backend context (the MTP draft context and the target context run on different streams and must not share the buffer).
+struct qcache_t { const void * ctxp = nullptr; char * buf = nullptr; const ggml_tensor * t = nullptr; const void * data = nullptr; int64_t ne10 = 0, ne11 = 0, ne12 = 0, ne13 = 0; int type = -1; };
+static qcache_t g_mmvq_qcache[8];
+static qcache_t * mmvq_qcache_find(const void * ctxp) {
+    for (auto & c : g_mmvq_qcache) { if (c.ctxp == ctxp) return &c; }
+    return nullptr;
+}
+void ggml_cuda_mmvq_qcache_reset(void * ctxp) {   // called at the start of every graph evaluation of that context (tensor objects are reused with new data each token)
+    qcache_t * c = mmvq_qcache_find(ctxp);
+    if (c == nullptr) {   // first graph of this context: claim a slot and allocate its buffer outside of any stream capture
+        for (auto & s : g_mmvq_qcache) { if (s.ctxp == nullptr) { c = &s; break; } }
+        if (c == nullptr) return;
+        void * p = nullptr;
+        if (cudaMalloc(&p, 4u << 20) != cudaSuccess) { (void) cudaGetLastError(); return; }
+        c->ctxp = ctxp; c->buf = (char *) p;
+    }
+    c->t = nullptr; c->data = nullptr;
+}
+
 void ggml_cuda_mul_mat_vec_q(
         ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
         const ggml_cuda_mm_fusion_args_host * fusion) {
@@ -1572,13 +1591,37 @@ void ggml_cuda_mul_mat_vec_q(
     }
 
     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
-    ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1);
+    // H39: several matmuls of one layer consume the same activation (qkv + two 48-row projections + z; q, k, v): quantize it to q8_1 once per
+    // graph evaluation and let the later consumers reuse the buffer. The cache lives in a persistent device buffer (stable address for captured HIP graphs),
+    // is keyed by the src1 tensor object + data pointer + shape, and is dropped at the start of every graph evaluation. GGML_CUDA_MMVQ_QCACHE=0 disables.
+    const size_t q8_bytes = ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1;
+    static const bool qcache_en = []() { const char * e = getenv("GGML_CUDA_MMVQ_QCACHE"); return e == nullptr || atoi(e) != 0; }();
+    constexpr size_t QCACHE_BYTES = 4u << 20;
+    qcache_t * qp = mmvq_qcache_find(&ctx);
+    qcache_t dummy;
+    qcache_t & q = qp ? *qp : dummy;
+    ggml_cuda_pool_alloc<char> src1_q8_1;
+    char * q8_ptr = nullptr;
+    const bool use_cache = qcache_en && !ids && q8_bytes <= QCACHE_BYTES && q.buf != nullptr;
+    if (use_cache) {
+        q8_ptr = q.buf;
+        if (q.t == src1 && q.data == src1_d && q.ne10 == ne10 && q.ne11 == ne11 && q.ne12 == ne12 && q.ne13 == ne13 && q.type == (int) src0->type) {
+            goto q8_ready;   // already quantized by an earlier matmul that shares this activation
+        }
+    } else {
+        src1_q8_1.alloc(ctx.pool(), q8_bytes);
+        q8_ptr = src1_q8_1.get();
+    }
     {
         const int64_t s11 = src1->nb[1] / ts_src1;
         const int64_t s12 = src1->nb[2] / ts_src1;
         const int64_t s13 = src1->nb[3] / ts_src1;
-        quantize_row_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
+        quantize_row_q8_1_cuda(src1_d, nullptr, q8_ptr, src0->type, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
+        if (use_cache) {
+            q.t = src1; q.data = src1_d; q.ne10 = ne10; q.ne11 = ne11; q.ne12 = ne12; q.ne13 = ne13; q.type = (int) src0->type;
+        }
     }
+q8_ready:
 
     const int64_t s01 = src0->nb[1] / ts_src0;
     const int64_t s11 = ne10_padded / QK8_1;
@@ -1603,7 +1646,7 @@ void ggml_cuda_mul_mat_vec_q(
     const int64_t ids_stride = ids ? ids->nb[1] / ggml_type_size(ids->type) : 0;
 
     mul_mat_vec_q_switch_type(
-        src0->data, src0->type, src1_q8_1.get(), ids_d, fusion_local, dst_d, ne00,
+        src0->data, src0->type, q8_ptr, ids_d, fusion_local, dst_d, ne00,
         ne01,              ncols_dst,     s01, stride_col_y,     stride_col_dst,
         ne02, nchannels_y, nchannels_dst, s02, stride_channel_y, stride_channel_dst,
         ne03,              ne3,           s03, s13,              s3,               ids_stride, stream);
