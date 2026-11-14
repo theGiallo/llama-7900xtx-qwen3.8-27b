@@ -30,6 +30,9 @@ struct ggml_cuda_gdn_mma_args {
     int64_t sb3;
     float   scale;
     bool    eligible;
+    // H57: when set, the input state of sequence s is row state_ids[s] (of state_row floats) of the cache `state` (device-side gather, no GET_ROWS copy)
+    const int32_t * state_ids = nullptr;
+    int64_t         state_row = 0;
 };
 
 bool ggml_cuda_gdn_mma_launch(int device, const ggml_cuda_gdn_mma_args & args, cudaStream_t stream);

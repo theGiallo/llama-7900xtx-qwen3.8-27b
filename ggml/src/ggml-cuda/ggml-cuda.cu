@@ -4491,6 +4491,50 @@ static int ggml_cuda_try_fuse_conv_cpys(ggml_backend_cuda_context * cuda_ctx, gg
     return 9;
 }
 
+// H57: a GET_ROWS that only copies one cache row into a contiguous buffer for a GATED_DELTA_NET (the recurrent state gather, one per GDN layer)
+// is skipped; the GDN kernels read the cache row directly through the device-side index tensor. GGML_CUDA_GDN_GATHER=0 disables it.
+struct ggml_cuda_gdn_gather_t { const float * base; const int32_t * ids; int64_t row; };
+static thread_local std::unordered_map<const ggml_tensor *, ggml_cuda_gdn_gather_t> g_gdn_gather;
+
+bool ggml_cuda_gdn_gather_get(const ggml_tensor * state_view, const float ** base, const int32_t ** ids, int64_t * row) {
+    auto it = g_gdn_gather.find(state_view);
+    if (it == g_gdn_gather.end()) return false;
+    *base = it->second.base; *ids = it->second.ids; *row = it->second.row;
+    return true;
+}
+
+static bool ggml_cuda_gdn_try_defer_gather(const ggml_cgraph * cgraph, int i) {
+    static const bool en = [] { const char * e = getenv("GGML_CUDA_GDN_GATHER"); return e == nullptr || atoi(e) != 0; }();
+    const ggml_tensor * g = cgraph->nodes[i];
+    if (!en || g->op != GGML_OP_GET_ROWS || (g->flags & GGML_TENSOR_FLAG_OUTPUT)) return false;
+    const ggml_tensor * src = g->src[0]; const ggml_tensor * ids = g->src[1];
+    static const bool dbg = getenv("GGML_CUDA_GDN_GATHER_DBG") != nullptr; static int dbg_n = 0;
+#define GDBG(code) do { if (dbg && g->ne[0] == 786432 && dbg_n < 6) { ++dbg_n; fprintf(stderr, "GATHERDBG node %d reason %d name %s\n", i, code, g->name); } } while (0)
+    if (src == nullptr || ids == nullptr || src->type != GGML_TYPE_F32 || g->type != GGML_TYPE_F32 || ids->type != GGML_TYPE_I32) { GDBG(1); return false; }
+    if (g->ne[1] != 1 || g->ne[2] != 1 || g->ne[3] != 1 || ids->ne[0] != 1 || src->nb[0] != 4 || src->nb[1] != (size_t) src->ne[0] * 4) { GDBG(2); return false; }
+    std::vector<const ggml_tensor *> V = { g };
+    const auto in = [&](const ggml_tensor * t) { return t != nullptr && std::find(V.begin(), V.end(), t) != V.end(); };
+    const ggml_tensor * gdn = nullptr; int consumers = 0;
+    for (int j = i + 1; j < cgraph->n_nodes; ++j) {
+        const ggml_tensor * n = cgraph->nodes[j];
+        bool uses = false;
+        for (int k = 0; k < GGML_MAX_SRC; ++k) { if (in(n->src[k])) { uses = true; } }
+        if (!uses) continue;
+        // build_rs also copies the extra states (zero rows when there are none): an empty node is never executed, it is not a consumer
+        if (ggml_is_empty(n) || (n->op == GGML_OP_CPY && n->src[0] != nullptr && ggml_is_empty(n->src[0]))) continue;
+        if (n->op == GGML_OP_VIEW || n->op == GGML_OP_RESHAPE || n->op == GGML_OP_PERMUTE || n->op == GGML_OP_TRANSPOSE) { V.push_back(n); continue; }
+        if (n->op != GGML_OP_GATED_DELTA_NET || !in(n->src[5])) { GDBG(3 + 10 * (int) n->op); return false; }
+        for (int k = 0; k < GGML_MAX_SRC; ++k) { if (k != 5 && in(n->src[k])) { GDBG(4); return false; } }
+        gdn = n; ++consumers;
+    }
+    if (consumers != 1 || gdn == nullptr) { GDBG(5 + 10 * consumers); return false; }
+    const ggml_tensor * v = gdn->src[2]; const ggml_tensor * sv = gdn->src[5];
+    if (v->ne[3] != 1 || (int64_t) v->ne[0] * v->ne[0] * v->ne[1] != src->ne[0] || ggml_nelements(sv) != src->ne[0] || sv->data != g->data || !ggml_is_contiguous(sv)) { GDBG(6 + 10 * (int) (sv->data != g->data) + 100 * (int) !ggml_is_contiguous(sv) + 1000 * (int) (ggml_nelements(sv) != src->ne[0])); return false; }
+    g_gdn_gather[sv] = { (const float *) src->data, (const int32_t *) ids->data, (int64_t) src->nb[1] / 4 };
+    return true;
+}
+
+#undef GDBG
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
     if (ggml_cuda_fusion_disabled()) {
@@ -5587,6 +5631,10 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     continue;
                 }
 
+                if (node->op == GGML_OP_GET_ROWS && ggml_cuda_gdn_try_defer_gather(cgraph, i)) {
+                    continue;
+                }
+
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
 
                 {
@@ -5728,6 +5776,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     ggml_cuda_batch_flush();
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
     ggml_cuda_mmvq_qcache_reset(cuda_ctx);
+    g_gdn_gather.clear();
 
     ggml_cuda_set_device(cuda_ctx->device);
 
