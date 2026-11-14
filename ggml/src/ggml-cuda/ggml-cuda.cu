@@ -5590,9 +5590,9 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
 
                 {
-                    static const bool dump = getenv("GGML_CUDA_DUMP_NODES") != nullptr;
+                    static const bool dump = getenv("GGML_CUDA_DUMP_NODES") != nullptr; static const int dump_ne = getenv("GGML_CUDA_DUMP_NODES") ? std::max(1, atoi(getenv("GGML_CUDA_DUMP_NODES"))) : 1;
                     static bool dumped = false;
-                    if (dump && !dumped && cgraph->n_nodes > 1000 && cgraph->nodes[0]->ne[1] == 1) {
+                    if (dump && !dumped && cgraph->n_nodes > 1000 && cgraph->nodes[0]->ne[1] == dump_ne) {
                         if (nodes_to_skip != 0) {
                             fprintf(stderr, "DUMPFUSED %d %s(%s) + %d more, last %s(%s)\n", i, ggml_op_name(node->op), node->name, nodes_to_skip,
                                     ggml_op_name(cgraph->nodes[i + nodes_to_skip]->op), cgraph->nodes[i + nodes_to_skip]->name);
