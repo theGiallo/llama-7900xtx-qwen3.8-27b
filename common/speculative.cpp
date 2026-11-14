@@ -1697,7 +1697,8 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         verify_row0.assign(n_seq, -1);
 
         // shared memory and chained heads keep the host rows
-        static const bool devrows_en = [] { const char * e = getenv("SPEC_MTP_DEVROWS"); return e == nullptr || atoi(e) != 0; }();
+        // off by default: with our merged catch-up the synchronous row read-backs of the device-row mode cost 2-3 % per round at 54k-113k context (H54); SPEC_MTP_DEVROWS=1 enables it
+        static const bool devrows_en = [] { const char * e = getenv("SPEC_MTP_DEVROWS"); return e != nullptr && atoi(e) != 0; }();
         if (devrows_en && !is_mem_shared && !chain_heads) {
             dev_rows = llama_set_embeddings_nextn_dev(ctx_tgt, true) && llama_set_ctx_state_src(ctx_dft, ctx_tgt);
             if (!dev_rows) {
