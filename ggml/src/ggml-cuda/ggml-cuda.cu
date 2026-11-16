@@ -4448,6 +4448,12 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph *                cgraph,
         return true;
     }
 
+    // H58: the GDN gate chain ADD -> softplus -> MUL had its kernel and executor but this matcher never accepted it
+    if (ops.size() == 3 && ops.begin()[0] == GGML_OP_ADD && ops.begin()[1] == GGML_OP_UNARY && ops.begin()[2] == GGML_OP_MUL
+     && unary_ops.size() == 1 && unary_ops.begin()[0] == GGML_UNARY_OP_SOFTPLUS) {
+        return ggml_cuda_gdn_gate_supported(cgraph->nodes[node_idx], cgraph->nodes[node_idx+1], cgraph->nodes[node_idx+2]);
+    }
+
     return false;
 }
 
@@ -4535,6 +4541,61 @@ static bool ggml_cuda_gdn_try_defer_gather(const ggml_cgraph * cgraph, int i) {
 }
 
 #undef GDBG
+// H58: the conv-state GET_ROWS of a GDN layer (one cache row of (d_conv-1)*channels floats) only feeds the CONCAT that builds conv_input = [state | new columns];
+// it is skipped and the CONCAT is replaced by one kernel that reads the cache row through the device-side index. GGML_CUDA_CONV_GATHER=0 disables it.
+struct ggml_cuda_conv_gather_t { const float * base; const int32_t * ids; int64_t row; };
+static thread_local std::unordered_map<const ggml_tensor *, ggml_cuda_conv_gather_t> g_conv_gather;   // key: the CONCAT node
+
+static __global__ void conv_gather_concat_f32(const float * base, const int32_t * ids, int64_t row, const char * src1, char * dst,
+        int64_t ne0, int64_t ne1, int64_t ne00, int64_t nb10, int64_t nb11, int64_t nb0, int64_t nb1) {
+    const int64_t total = ne0 * ne1;
+    for (int64_t idx = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; idx < total; idx += (int64_t) gridDim.x * blockDim.x) {
+        const int64_t i0 = idx % ne0, i1 = idx / ne0;
+        const float v = i0 < ne00 ? base[(int64_t) ids[0] * row + i0 + ne00 * i1] : *(const float *) (src1 + (i0 - ne00) * nb10 + i1 * nb11);
+        *(float *) (dst + i0 * nb0 + i1 * nb1) = v;
+    }
+}
+
+static bool ggml_cuda_conv_try_defer_gather(const ggml_cgraph * cgraph, int i) {
+    static const bool en = [] { const char * e = getenv("GGML_CUDA_CONV_GATHER"); return e == nullptr || atoi(e) != 0; }();
+    const ggml_tensor * g = cgraph->nodes[i];
+    if (!en || g->op != GGML_OP_GET_ROWS || (g->flags & GGML_TENSOR_FLAG_OUTPUT)) return false;
+    const ggml_tensor * src = g->src[0]; const ggml_tensor * ids = g->src[1];
+    if (src == nullptr || ids == nullptr || src->type != GGML_TYPE_F32 || g->type != GGML_TYPE_F32 || ids->type != GGML_TYPE_I32) return false;
+    if (g->ne[1] != 1 || g->ne[2] != 1 || g->ne[3] != 1 || ids->ne[0] != 1 || src->nb[0] != 4 || src->nb[1] != (size_t) src->ne[0] * 4) return false;
+    std::vector<const ggml_tensor *> V = { g };
+    const auto in = [&](const ggml_tensor * t) { return t != nullptr && std::find(V.begin(), V.end(), t) != V.end(); };
+    const ggml_tensor * cc = nullptr; int consumers = 0;
+    for (int j = i + 1; j < cgraph->n_nodes; ++j) {
+        const ggml_tensor * n = cgraph->nodes[j];
+        bool uses = false;
+        for (int k = 0; k < GGML_MAX_SRC; ++k) { if (in(n->src[k])) { uses = true; } }
+        if (!uses) continue;
+        if (ggml_is_empty(n) || (n->op == GGML_OP_CPY && n->src[0] != nullptr && ggml_is_empty(n->src[0]))) continue;
+        if (n->op == GGML_OP_VIEW || n->op == GGML_OP_RESHAPE || n->op == GGML_OP_PERMUTE || n->op == GGML_OP_TRANSPOSE) { V.push_back(n); continue; }
+        if (n->op != GGML_OP_CONCAT || !in(n->src[0]) || in(n->src[1])) return false;
+        cc = n; ++consumers;
+    }
+    if (consumers != 1 || cc == nullptr) return false;
+    const ggml_tensor * s0 = cc->src[0]; const ggml_tensor * s1 = cc->src[1];
+    if (ggml_get_op_params_i32(cc, 0) != 0 || cc->type != GGML_TYPE_F32 || s1->type != GGML_TYPE_F32 || cc->ne[2] != 1 || cc->ne[3] != 1 || s0->ne[2] != 1 || s0->ne[3] != 1) return false;
+    if (s0->ne[1] != s1->ne[1] || s0->ne[0] * s0->ne[1] != src->ne[0] || ggml_nelements(s0) != src->ne[0] || s0->data != g->data || !ggml_is_contiguous(s0)) return false;
+    if (cc->ne[0] != s0->ne[0] + s1->ne[0] || cc->ne[1] != s0->ne[1] || cc->nb[0] != 4 || s1->nb[0] % 4 != 0) return false;
+    g_conv_gather[cc] = { (const float *) src->data, (const int32_t *) ids->data, (int64_t) src->nb[1] / 4 };
+    return true;
+}
+
+static bool ggml_cuda_conv_run_concat(ggml_backend_cuda_context & ctx, const ggml_tensor * cc) {
+    auto it = g_conv_gather.find(cc);
+    if (it == g_conv_gather.end()) return false;
+    const ggml_tensor * s0 = cc->src[0]; const ggml_tensor * s1 = cc->src[1];
+    const int64_t total = cc->ne[0] * cc->ne[1];
+    const int blocks = (int) std::min<int64_t>((total + 255) / 256, 1024);
+    conv_gather_concat_f32<<<blocks, 256, 0, ctx.stream()>>>(it->second.base, it->second.ids, it->second.row, (const char *) s1->data, (char *) cc->data,
+        cc->ne[0], cc->ne[1], s0->ne[0], (int64_t) s1->nb[0], (int64_t) s1->nb[1], (int64_t) cc->nb[0], (int64_t) cc->nb[1]);
+    return true;
+}
+
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
     if (ggml_cuda_fusion_disabled()) {
@@ -5631,7 +5692,10 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     continue;
                 }
 
-                if (node->op == GGML_OP_GET_ROWS && ggml_cuda_gdn_try_defer_gather(cgraph, i)) {
+                if (node->op == GGML_OP_GET_ROWS && (ggml_cuda_gdn_try_defer_gather(cgraph, i) || ggml_cuda_conv_try_defer_gather(cgraph, i))) {
+                    continue;
+                }
+                if (node->op == GGML_OP_CONCAT && ggml_cuda_conv_run_concat(*cuda_ctx, node)) {
                     continue;
                 }
 
@@ -5777,6 +5841,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
     ggml_cuda_mmvq_qcache_reset(cuda_ctx);
     g_gdn_gather.clear();
+    g_conv_gather.clear();
 
     ggml_cuda_set_device(cuda_ctx->device);
 
