@@ -637,6 +637,75 @@ void ggml_cuda_op_rms_norm_scale_fused(ggml_backend_cuda_context & ctx, ggml_ten
     rms_norm_f32_cuda<true>(src0, dst_d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, stream, scale);
 }
 
+// H60: residual ADD + RMS_NORM + MUL in one kernel (decode shapes). It writes the sum (the next residual add still reads it) and the normalised output.
+// The arithmetic is the vectorised path of rms_norm_f32 with do_multiply: xs = a + b, tmp = sum of squares in the same order, block_reduce, scale = rsqrtf(tmp/ncols + eps), (scale*xs)*w.
+template <int block_size, int vpt>
+static __global__ void add_rms_norm_mul_f32(const float * a, const float * b, const float * w, float * sum_out, float * dst, const int ncols, const float eps) {
+    const int row = blockIdx.x, tid = threadIdx.x;
+    extern __shared__ float s_sum[];
+    const int ncols4 = ncols / 4;
+    const float4 * a4 = (const float4 *) (a + (size_t) row * ncols);
+    const float4 * b4 = (const float4 *) (b + (size_t) row * ncols);
+    const float4 * w4 = (const float4 *) w;
+    float4 * s4 = (float4 *) (sum_out + (size_t) row * ncols);
+    float4 * d4 = (float4 *) (dst + (size_t) row * ncols);
+    float4 xs[vpt];
+    float tmp = 0.0f;
+#pragma unroll
+    for (int k = 0; k < vpt; k++) {
+        const int i = tid + k*block_size;
+        if (i < ncols4) {
+            const float4 x = a4[i], y = b4[i];
+            xs[k] = make_float4(x.x + y.x, x.y + y.y, x.z + y.z, x.w + y.w);
+            s4[i] = xs[k];
+            tmp += xs[k].x*xs[k].x + xs[k].y*xs[k].y + xs[k].z*xs[k].z + xs[k].w*xs[k].w;
+        }
+    }
+    tmp = block_reduce<block_reduce_method::SUM, block_size>(tmp, s_sum);
+    const float scale = rsqrtf(tmp / ncols + eps);
+#pragma unroll
+    for (int k = 0; k < vpt; k++) {
+        const int i = tid + k*block_size;
+        if (i < ncols4) {
+            float4 r = make_float4(scale*xs[k].x, scale*xs[k].y, scale*xs[k].z, scale*xs[k].w);
+            const float4 m = w4[i];
+            r.x *= m.x; r.y *= m.y; r.z *= m.z; r.w *= m.w;
+            d4[i] = r;
+        }
+    }
+}
+
+bool ggml_cuda_add_rms_norm_mul_supported(const ggml_tensor * add, const ggml_tensor * rms, const ggml_tensor * mul) {
+    if (add->op != GGML_OP_ADD || rms->op != GGML_OP_RMS_NORM || mul->op != GGML_OP_MUL || rms->src[0] != add) return false;
+    const ggml_tensor * w = mul->src[0] == rms ? mul->src[1] : (mul->src[1] == rms ? mul->src[0] : nullptr);
+    if (w == nullptr) return false;
+    if (add->type != GGML_TYPE_F32 || mul->type != GGML_TYPE_F32 || w->type != GGML_TYPE_F32) return false;
+    if (!ggml_are_same_shape(add->src[0], add->src[1]) || !ggml_are_same_shape(add->src[0], add) || !ggml_is_contiguous(add->src[0]) || !ggml_is_contiguous(add->src[1]) ||
+        !ggml_is_contiguous(add) || !ggml_is_contiguous(mul) || !ggml_are_same_shape(mul, add)) return false;
+    const int64_t ncols = add->ne[0];
+    if (ncols % 4 != 0 || ncols / 4 > 4096 || ggml_nelements(w) != ncols || !ggml_is_contiguous(w) || ggml_nrows(add) > 64) return false;
+    for (const ggml_tensor * t : { (const ggml_tensor *) add->src[0], (const ggml_tensor *) add->src[1], (const ggml_tensor *) add, (const ggml_tensor *) w, (const ggml_tensor *) mul }) {
+        if (((uintptr_t) t->data & 15) != 0) return false;
+    }
+    return true;
+}
+
+void ggml_cuda_op_add_rms_norm_mul(ggml_backend_cuda_context & ctx, ggml_tensor * add, ggml_tensor * rms, ggml_tensor * mul) {
+    const ggml_tensor * w = mul->src[0] == rms ? mul->src[1] : mul->src[0];
+    float eps; memcpy(&eps, rms->op_params, sizeof(float));
+    const int ncols = (int) add->ne[0], nrows = (int) ggml_nrows(add), n4 = ncols / 4;
+    cudaStream_t stream = ctx.stream();
+    const float * a = (const float *) add->src[0]->data; const float * b = (const float *) add->src[1]->data;
+#define ADDNORM_LAUNCH(BS, VPT) add_rms_norm_mul_f32<BS, VPT><<<nrows, BS, BS > WARP_SIZE ? 32 * sizeof(float) : 0, stream>>>(a, b, (const float *) w->data, (float *) add->data, (float *) mul->data, ncols, eps)
+    if      (n4 <= 32)   { ADDNORM_LAUNCH(32, 1); }
+    else if (n4 <= 128)  { ADDNORM_LAUNCH(128, 1); }
+    else if (n4 <= 256)  { ADDNORM_LAUNCH(256, 1); }
+    else if (n4 <= 512)  { ADDNORM_LAUNCH(512, 1); }
+    else if (n4 <= 1024) { ADDNORM_LAUNCH(1024, 1); }
+    else                 { ADDNORM_LAUNCH(1024, 4); }
+#undef ADDNORM_LAUNCH
+}
+
 void ggml_cuda_op_rms_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor * dst, ggml_tensor * mul_tensor) {
     const ggml_tensor * rms_norm_src = (ggml_tensor *) dst->src[0];
     float eps = 0.0f;

@@ -4605,6 +4605,41 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     ggml_tensor * node = cgraph->nodes[i];
 if (node->op == GGML_OP_CPY) { const int r = ggml_cuda_try_fuse_conv_cpys(cuda_ctx, cgraph, i); if (r) return r; }
 
+    // H60: residual ADD + RMS_NORM + MUL in one kernel; GGML_CUDA_ADD_NORM=0 disables it. The group has two outputs (the sum and the normalised result).
+    if (node->op == GGML_OP_ADD && i + 2 < cgraph->n_nodes && cgraph->nodes[i + 1]->op == GGML_OP_RMS_NORM && cgraph->nodes[i + 2]->op == GGML_OP_MUL) {
+        static const bool addnorm_en = [] { const char * e = getenv("GGML_CUDA_ADD_NORM"); return e == nullptr || atoi(e) != 0; }();
+        static const bool addnorm_dbg = getenv("GGML_CUDA_ADDNORM_DBG") != nullptr; static int addnorm_dbg_n = 0;
+        const bool an_sup = addnorm_en && ggml_cuda_add_rms_norm_mul_supported(node, cgraph->nodes[i + 1], cgraph->nodes[i + 2]);
+        const bool an_sub = an_sup && ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_ADD, GGML_OP_RMS_NORM, GGML_OP_MUL }, { i, i + 2 });
+        const int outs_dbg[] = { i, i + 2 };
+        // kernel-specific aliasing rules (the generic check also compares the skipped intermediate norm tensor): the weight must not overlap either output, the two outputs
+        // must not overlap each other, and an output may alias an input only exactly in place (same base and size): every block reads its row fully before it writes it
+        bool an_mem = false;
+        if (an_sub) {
+            const ggml_tensor * an_w = cgraph->nodes[i + 2]->src[0] == cgraph->nodes[i + 1] ? cgraph->nodes[i + 2]->src[1] : cgraph->nodes[i + 2]->src[0];
+            const auto ov = [](const ggml_tensor * x, const ggml_tensor * y) {
+                const uintptr_t x0 = (uintptr_t) x->data, x1 = x0 + ggml_nbytes(x), y0 = (uintptr_t) y->data, y1 = y0 + ggml_nbytes(y);
+                return x0 < y1 && y0 < x1;
+            };
+            const auto same = [](const ggml_tensor * x, const ggml_tensor * y) { return x->data == y->data && ggml_nbytes(x) == ggml_nbytes(y); };
+            const ggml_tensor * sum = cgraph->nodes[i]; const ggml_tensor * res = cgraph->nodes[i + 2];
+            an_mem = !ov(sum, res) && !ov(an_w, sum) && !ov(an_w, res);
+            for (const ggml_tensor * in : { (const ggml_tensor *) sum->src[0], (const ggml_tensor *) sum->src[1] }) {
+                if (ov(in, sum) && !same(in, sum)) an_mem = false;
+                if (ov(in, res) && !same(in, res)) an_mem = false;
+            }
+        }
+        if (addnorm_dbg && addnorm_dbg_n < 8 && node->ne[0] == 5120) { ++addnorm_dbg_n; fprintf(stderr, "ADDNORMDBG node %d en=%d supported=%d subgraph=%d memranges=%d ne1=%lld\n", i, (int) addnorm_en, (int) an_sup, (int) an_sub, (int) an_mem, (long long) node->ne[1]); }
+        if (an_sup && an_sub) {
+            const int outs[] = { i, i + 2 };
+            if (an_mem) {
+                ggml_cuda_op_add_rms_norm_mul(*cuda_ctx, node, cgraph->nodes[i + 1], cgraph->nodes[i + 2]);
+                return 2;
+            }
+        }
+    }
+
+
     if (node->op == GGML_OP_MUL_MAT_ID && cuda_ctx->stream_context().concurrent_events.empty() &&
             ggml_cuda_match_shared_expert(cgraph, i, i + 3) &&
             ggml_cuda_should_fuse_mul_mat_vec_q(cgraph->nodes[i + 2]->src[1])) {
