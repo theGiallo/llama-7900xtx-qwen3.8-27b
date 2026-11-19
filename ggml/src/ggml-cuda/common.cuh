@@ -1514,6 +1514,7 @@ struct ggml_cuda_mm_fusion_args_device {
     const void * gdn_dt = nullptr;
     const void * gdn_a = nullptr;
     float * gdn_dst2 = nullptr;
+    int msum = 0;   // lossy q4_K / q5_K sum-of-activations shortcut (GGML_CUDA_MMVQ_MSUM=1)
 };
 
 struct ggml_cuda_kernel_launch_params {

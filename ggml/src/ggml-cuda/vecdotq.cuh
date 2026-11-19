@@ -598,6 +598,25 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_vmmq(
     return dm4f.x*sumf_d - dm4f.y*sumf_m;
 }
 
+// H67: same as vec_dot_q4_K_q8_1_impl_vmmq but the "sum of u" term uses ms[i] = ds.y of the q8_1 block (d * sum of its 32 quants) on ONE of the 4 threads that share the block (0 on the others)
+// instead of 2 dp4a per sub-block on every thread. LOSSY (d * sum is stored as a half): opt-in at run time with GGML_CUDA_MMVQ_MSUM=1, off by default.
+static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_vmmq_ms(
+    const int * __restrict__ v, const int * __restrict__ u, const uint8_t * __restrict__ sc,
+    const uint8_t * __restrict__ m, const half2 & dm4, const float * __restrict__ d8, const float * __restrict__ ms) {
+    float sumf_d = 0.0f;
+    float sumf_m = 0.0f;
+#pragma unroll
+    for (int i = 0; i < QR4_K; ++i) {
+        const int v0i = (v[0] >> (4*i)) & 0x0F0F0F0F;
+        const int v1i = (v[1] >> (4*i)) & 0x0F0F0F0F;
+        const int dot1 = ggml_cuda_dp4a(v1i, u[2*i+1], ggml_cuda_dp4a(v0i, u[2*i+0], 0));
+        sumf_d += d8[i] * (dot1 * sc[i]);
+        sumf_m += ms[i] * (float) m[i];
+    }
+    const float2 dm4f = __half22float2(dm4);
+    return dm4f.x*sumf_d - dm4f.y*sumf_m;
+}
+
 // contiguous v/x + u/y values
 static __device__ __forceinline__ float vec_dot_q4_K_q8_1_impl_mmq(
     const int * __restrict__ v, const int * __restrict__ u, const uint8_t * __restrict__ sc,
@@ -662,6 +681,27 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_vmmq(
 }
 
 // contiguous v/x + u/y values
+static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_vmmq_ms(
+    const int * __restrict__ vl, const int * __restrict__ vh, const int * __restrict__ u, const uint8_t * __restrict__ sc,
+    const uint8_t * __restrict__ m, const half2 & dm5, const float * __restrict__ d8, const float * __restrict__ ms) {
+    float sumf_d = 0.0f;
+    float sumf_m = 0.0f;
+#pragma unroll
+    for (int i = 0; i < QR5_K; ++i) {
+        const int vl0i = (vl[0] >> (4*i)) & 0x0F0F0F0F;
+        const int vl1i = (vl[1] >> (4*i)) & 0x0F0F0F0F;
+        const int vh0i = ((vh[0] >> i) << 4) & 0x10101010;
+        const int vh1i = ((vh[1] >> i) << 4) & 0x10101010;
+        const int v0i = vl0i | vh0i;
+        const int v1i = vl1i | vh1i;
+        const int dot1 = ggml_cuda_dp4a(v0i, u[2*i+0], ggml_cuda_dp4a(v1i, u[2*i+1], 0));
+        sumf_d += d8[i] * (dot1 * sc[i]);
+        sumf_m += ms[i] * (float) m[i];
+    }
+    const float2 dm5f = __half22float2(dm5);
+    return dm5f.x*sumf_d - dm5f.y*sumf_m;
+}
+
 static __device__ __forceinline__ float vec_dot_q5_K_q8_1_impl_mmq(
     const int * __restrict__ v, const int * __restrict__ u, const uint8_t * __restrict__ sc,
     const uint8_t * __restrict__ m, const half2 & dm4, const half2 * __restrict__ ds8) {
@@ -1038,7 +1078,8 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1(
     return vec_dot_q3_K_q8_1_impl_mmvq(vl, vh, u, scales, d, d8);
 }
 
-static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
+template <bool MS>
+static __device__ __forceinline__ float vec_dot_q4_K_q8_1_t(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 
     const block_q4_K * bq4_K = (const block_q4_K *) vbq + kbx;
@@ -1046,6 +1087,7 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
     int    v[2];
     int    u[2*QR4_K];
     float d8[QR4_K];
+    float ms[QR4_K];
 
     // iqs is in 0,2..30. bq8_offset = iqs/4 -> bq8_offset = 0, 2, 4, 6
     const int bq8_offset = QR4_K * ((iqs/2) / (QI8_1/2));
@@ -1079,16 +1121,29 @@ static __device__ __forceinline__ float vec_dot_q4_K_q8_1(
     for (int i = 0; i < QR4_K; ++i) {
         const block_q8_1 * bq8i = bq8_1 + bq8_offset + i;
         d8[i] = __low2float(bq8i->ds);
+        ms[i] = ((iqs/2)%4) == 0 ? __high2float(bq8i->ds) : 0.0f;
 
         const int * q8 = (const int *)bq8i->qs + ((iqs/2)%4);
         u[2*i+0] = q8[0];
         u[2*i+1] = q8[4];
     }
 
-    return vec_dot_q4_K_q8_1_impl_vmmq(v, u, sc, m, bq4_K->dm, d8);
+if constexpr (MS) {
+        return vec_dot_q4_K_q8_1_impl_vmmq_ms(v, u, sc, m, bq4_K->dm, d8, ms);
+    } else {
+        return vec_dot_q4_K_q8_1_impl_vmmq(v, u, sc, m, bq4_K->dm, d8);
+    }
 }
 
-static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
+static __device__ __forceinline__ float vec_dot_q4_K_q8_1(const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+    return vec_dot_q4_K_q8_1_t<false>(vbq, bq8_1, kbx, iqs);
+}
+static __device__ __forceinline__ float vec_dot_q4_K_q8_1_ms(const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+    return vec_dot_q4_K_q8_1_t<true>(vbq, bq8_1, kbx, iqs);
+}
+
+template <bool MS>
+static __device__ __forceinline__ float vec_dot_q5_K_q8_1_t(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 
     const block_q5_K * bq5_K = (const block_q5_K *) vbq + kbx;
@@ -1097,6 +1152,7 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
     int   vh[2];
     int    u[2*QR5_K];
     float d8[QR5_K];
+    float ms[QR5_K];
 
     const int bq8_offset = QR5_K * ((iqs/2) / (QI8_1/2));
     const int * ql = (const int *)(bq5_K->qs + 16 * bq8_offset + 4 * ((iqs/2)%4));
@@ -1130,13 +1186,25 @@ static __device__ __forceinline__ float vec_dot_q5_K_q8_1(
     for (int i = 0; i < QR5_K; ++i) {
         const block_q8_1 * bq8i = bq8_1 + bq8_offset + i;
         d8[i] = __low2float(bq8i->ds);
+        ms[i] = ((iqs/2)%4) == 0 ? __high2float(bq8i->ds) : 0.0f;
 
         const int * q8 = (const int *)bq8i->qs + ((iqs/2)%4);
         u[2*i+0] = q8[0];
         u[2*i+1] = q8[4];
     }
 
-    return vec_dot_q5_K_q8_1_impl_vmmq(vl, vh, u, sc, m, bq5_K->dm, d8);
+if constexpr (MS) {
+        return vec_dot_q5_K_q8_1_impl_vmmq_ms(vl, vh, u, sc, m, bq5_K->dm, d8, ms);
+    } else {
+        return vec_dot_q5_K_q8_1_impl_vmmq(vl, vh, u, sc, m, bq5_K->dm, d8);
+    }
+}
+
+static __device__ __forceinline__ float vec_dot_q5_K_q8_1(const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+    return vec_dot_q5_K_q8_1_t<false>(vbq, bq8_1, kbx, iqs);
+}
+static __device__ __forceinline__ float vec_dot_q5_K_q8_1_ms(const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+    return vec_dot_q5_K_q8_1_t<true>(vbq, bq8_1, kbx, iqs);
 }
 
 static __device__ __forceinline__ float vec_dot_q6_K_q8_1(
