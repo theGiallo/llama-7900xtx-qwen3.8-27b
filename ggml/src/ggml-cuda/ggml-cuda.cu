@@ -4596,6 +4596,67 @@ static bool ggml_cuda_conv_run_concat(ggml_backend_cuda_context & ctx, const ggm
     return true;
 }
 
+// H61: the two 48-row GDN projections of a layer (alpha: MUL_MAT -> ADD(dt) -> softplus -> MUL(a), beta: MUL_MAT -> sigmoid) read the same activation and are
+// computed by ONE fused mmvq launch (dual mode of the fused GLU path). GGML_CUDA_GDN_DUALPROJ=0 disables it. Returns the number of extra nodes consumed.
+static int ggml_cuda_try_fuse_gdn_dual_proj(ggml_backend_cuda_context & ctx, ggml_cgraph * cgraph, int i) {
+    static const bool en = [] { const char * e = getenv("GGML_CUDA_GDN_DUALPROJ"); return e != nullptr && atoi(e) != 0; }();
+    static const bool dbg = getenv("GGML_CUDA_GDN_DUALPROJ_DBG") != nullptr; static int dbg_n = 0;
+#define DPDBG(code) do { if (dbg && dbg_n < 8) { ++dbg_n; fprintf(stderr, "DUALPROJDBG node %d reason %d\n", i, code); } } while (0)
+    ggml_tensor * mm_a = cgraph->nodes[i];
+    if (!en || mm_a->op != GGML_OP_MUL_MAT || mm_a->src[0]->type != GGML_TYPE_IQ4_XS || mm_a->ne[0] != 48 || mm_a->ne[1] > 8 || mm_a->ne[2] != 1 || mm_a->ne[3] != 1) return 0;
+    const auto is_noop = [](const ggml_tensor * t) { return t->op == GGML_OP_VIEW || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_TRANSPOSE || t->op == GGML_OP_NONE; };
+    int idx[5]; int np = 0; const int expect_ops[5] = { GGML_OP_ADD, GGML_OP_UNARY, GGML_OP_MUL, GGML_OP_MUL_MAT, GGML_OP_UNARY };
+    std::vector<const ggml_tensor *> va = { mm_a }, vb;
+    const auto in = [](const std::vector<const ggml_tensor *> & v, const ggml_tensor * t) { return t != nullptr && std::find(v.begin(), v.end(), t) != v.end(); };
+    int j = i + 1;
+    for (; j < cgraph->n_nodes && j <= i + 24 && np < 5; ++j) {
+        ggml_tensor * t = cgraph->nodes[j];
+        if (is_noop(t)) { if (in(va, t->src[0])) va.push_back(t); if (in(vb, t->src[0])) vb.push_back(t); continue; }
+        if ((int) t->op != expect_ops[np]) { DPDBG(1 + 10 * np); return 0; }
+        idx[np++] = j;
+        if (np == 4) vb.push_back(t);   // the beta matmul output starts its own view set
+    }
+    if (np != 5) { DPDBG(2); return 0; }
+    ggml_tensor * add = cgraph->nodes[idx[0]]; ggml_tensor * sp = cgraph->nodes[idx[1]]; ggml_tensor * mul = cgraph->nodes[idx[2]];
+    ggml_tensor * mm_b = cgraph->nodes[idx[3]]; ggml_tensor * sg = cgraph->nodes[idx[4]];
+    if (ggml_get_unary_op(sp) != GGML_UNARY_OP_SOFTPLUS || ggml_get_unary_op(sg) != GGML_UNARY_OP_SIGMOID) { DPDBG(3); return 0; }
+    if (!ggml_cuda_gdn_gate_supported(add, sp, mul) || (!in(va, add->src[0]) && !in(va, add->src[1]))) { DPDBG(4); return 0; }
+    if (mm_b->src[0]->type != GGML_TYPE_IQ4_XS || mm_b->src[1] != mm_a->src[1] || !in(vb, sg->src[0]) || !ggml_are_same_shape(mm_a, mm_b) || !ggml_are_same_stride(mm_a->src[0], mm_b->src[0])) { DPDBG(5 + 10 * (mm_b->src[1] != mm_a->src[1]) + 100 * !in(vb, sg->src[0])); return 0; }
+    const ggml_tensor * x = mm_a->src[1];
+    if (x->type != GGML_TYPE_F32 || mm_a->type != GGML_TYPE_F32 || mm_b->type != GGML_TYPE_F32) { DPDBG(6); return 0; }
+    // the outputs: mul (gate, [48,n]) and sg (beta, same number of floats, element (h, t) at h + 48 t): both contiguous
+    if (!ggml_is_contiguous(mul) || !ggml_is_contiguous(sg) || mul->ne[0] != 48 || ggml_nelements(sg) != ggml_nelements(mul)) { DPDBG(7); return 0; }
+    // consumers: the alpha matmul and its views feed only the ADD, add feeds only softplus, softplus only the MUL, the beta matmul and its views only the sigmoid
+    for (int q = i + 1; q < cgraph->n_nodes; ++q) {
+        const ggml_tensor * n = cgraph->nodes[q];
+        if (is_noop(n)) continue;
+        for (int k = 0; k < GGML_MAX_SRC; ++k) {
+            const ggml_tensor * sr = n->src[k];
+            if (sr == nullptr) continue;
+            if (in(va, sr) && n != add) { DPDBG(8); return 0; }
+            if (sr == add && n != sp) { DPDBG(9); return 0; }
+            if (sr == sp && n != mul) { DPDBG(10); return 0; }
+            if (in(vb, sr) && n != sg) { DPDBG(11); return 0; }
+        }
+    }
+    // aliasing: the two outputs must not overlap each other or any input (the kernel reads dt, a, the activation and both weights while it writes)
+    const auto ov = [](const ggml_tensor * p, const ggml_tensor * q) {
+        const uintptr_t p0 = (uintptr_t) p->data, p1 = p0 + ggml_nbytes(p), q0 = (uintptr_t) q->data, q1 = q0 + ggml_nbytes(q);
+        return p0 < q1 && q0 < p1;
+    };
+    const ggml_tensor * dt = in(va, add->src[0]) ? add->src[1] : add->src[0];
+    const ggml_tensor * av = mul->src[0] == sp ? mul->src[1] : mul->src[0];
+    if (ov(mul, sg)) { DPDBG(12); return 0; }
+    for (const ggml_tensor * o : { (const ggml_tensor *) mul, (const ggml_tensor *) sg }) {
+        for (const ggml_tensor * inp : { x, dt, av, (const ggml_tensor *) mm_a->src[0], (const ggml_tensor *) mm_b->src[0] }) { if (ov(o, inp)) { DPDBG(13); return 0; } }
+    }
+    ggml_cuda_mm_fusion_args_host fusion{};
+    fusion.gate = mm_b->src[0]; fusion.gdn_dt = dt; fusion.gdn_a = av; fusion.gdn_dst2 = sg; fusion.glu_op = GGML_GLU_OP_SWIGLU;
+    ggml_cuda_mul_mat_vec_q(ctx, mm_a->src[0], x, nullptr, mul, &fusion);
+    return idx[4] - i;
+#undef DPDBG
+}
+
 static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
 
     if (ggml_cuda_fusion_disabled()) {
@@ -4604,6 +4665,7 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
 
     ggml_tensor * node = cgraph->nodes[i];
 if (node->op == GGML_OP_CPY) { const int r = ggml_cuda_try_fuse_conv_cpys(cuda_ctx, cgraph, i); if (r) return r; }
+    if (node->op == GGML_OP_MUL_MAT) { const int r = ggml_cuda_try_fuse_gdn_dual_proj(*cuda_ctx, cgraph, i); if (r) return r; }
 
     // H60: residual ADD + RMS_NORM + MUL in one kernel; GGML_CUDA_ADD_NORM=0 disables it. The group has two outputs (the sum and the normalised result).
     if (node->op == GGML_OP_ADD && i + 2 < cgraph->n_nodes && cgraph->nodes[i + 1]->op == GGML_OP_RMS_NORM && cgraph->nodes[i + 2]->op == GGML_OP_MUL) {

@@ -1494,6 +1494,10 @@ struct ggml_cuda_mm_fusion_args_host {
     const ggml_tensor * shared_up = nullptr;
     const ggml_tensor * shared_gate = nullptr;
     ggml_tensor * shared_dst = nullptr;
+    // H61 dual GDN projection: alpha = x . W, beta = x . gate; dst = softplus(alpha + dt) * a, gdn_dst2 = sigmoid(beta)
+    const ggml_tensor * gdn_dt = nullptr;
+    const ggml_tensor * gdn_a = nullptr;
+    ggml_tensor * gdn_dst2 = nullptr;
 };
 struct ggml_cuda_mm_fusion_args_device {
     const void * x_bias = nullptr;
@@ -1507,6 +1511,9 @@ struct ggml_cuda_mm_fusion_args_device {
     const void * shared_gate = nullptr;
     float * shared_dst = nullptr;
     uint32_t shared_stride_col_dst = 0;
+    const void * gdn_dt = nullptr;
+    const void * gdn_a = nullptr;
+    float * gdn_dst2 = nullptr;
 };
 
 struct ggml_cuda_kernel_launch_params {
